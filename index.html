@@ -220,6 +220,9 @@ input[type=color]{
   <aside id="panel">
     <h1 class="brand">Salty Seamen<br><em>Configurator</em></h1>
     <p class="sub">Supercraft &middot; 7.925 m &middot; twin Suzuki 115</p>
+    <!-- the same two controls as the Scene section, repeated here so they
+         are reachable without scrolling the panel -->
+    <div class="toggles" id="quick" style="margin-bottom:22px"></div>
 
     <h2>Hull</h2>
     <div id="grp-hull"></div>
@@ -580,6 +583,15 @@ function prepareDeckMaterial(){
 const WATERLINE = 0.400;                 // metres above the keel baseline
 let water = null, skyTex = null, studioTex = null, waterOn = false;
 const waterU = { uT:{value:0} };
+/* "On the water" and "Download PDF" each appear twice - once under the
+   header and once in the Scene section - so every copy is kept in step. */
+const waterBtns = [], pdfBtns = [];
+function setPdfBtns(txt, disabled){
+  pdfBtns.forEach(b=>{
+    if(txt !== null) b.textContent = txt;
+    if(disabled !== null) b.disabled = disabled;
+  });
+}
 
 function gradientTexture(stops, w){
   const c = document.createElement("canvas"); c.width = w || 8; c.height = 512;
@@ -682,6 +694,7 @@ function setWater(on){
   scene.background = on ? skyTex : studioTex;
   scene.environment = on ? skyTex : studioEnv;
   document.getElementById("stage").classList.toggle("afloat", on);
+  waterBtns.forEach(b=>b.setAttribute("aria-pressed", String(on)));
 }
 
 function setColor(key, hex){
@@ -856,20 +869,25 @@ function buildUI(){
   addEventListener("keydown", e=>{ if(e.key === "Escape") sh.dataset.open = "false"; });
 
   const scn = document.getElementById("scene");
-  const wb = document.createElement("button");
-  wb.type = "button"; wb.textContent = "On the water";
-  wb.setAttribute("aria-pressed","false");
-  wb.onclick = ()=>{
-    const on = !waterOn;
-    setWater(on);
-    wb.setAttribute("aria-pressed", String(on));
-  };
-  scn.appendChild(wb);
-  const pb = document.createElement("button");
-  pb.type = "button"; pb.textContent = "Download PDF"; pb.className = "primary";
-  pb.title = "Every angle in the current colours, as a PDF";
-  pb.onclick = ()=>exportPDF(pb);
-  scn.appendChild(pb);
+  const quick = document.getElementById("quick");
+  function addWaterBtn(host){
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = "On the water";
+    b.title = "Put the boat on the sea";
+    b.setAttribute("aria-pressed", String(waterOn));
+    b.onclick = ()=>setWater(!waterOn);      // setWater syncs both copies
+    host.appendChild(b); waterBtns.push(b); return b;
+  }
+  function addPdfBtn(host){
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = "Download PDF"; b.className = "primary";
+    b.title = "Every angle in the current colours, as a PDF";
+    b.onclick = ()=>exportPDF(b);
+    host.appendChild(b); pdfBtns.push(b); return b;
+  }
+  addWaterBtn(quick); addPdfBtn(quick);      // duplicated under the header
+  addWaterBtn(scn);
+  const pb = addPdfBtn(scn);
   const sb = document.createElement("button");
   sb.type = "button"; sb.textContent = "All angles";
   sb.title = "View every angle on screen";
@@ -1029,13 +1047,20 @@ const PDF_VIEWS = [
    on-screen sheet: printable, and each image can be saved by right-click.
    For a PDF file, boat3d/make_pdf.py builds one from the render folders. */
 async function buildSheet(btn){
+  // may be driven by "All angles" (a lone button) or as the PDF fallback
+  const isPdf = pdfBtns.indexOf(btn) >= 0;
+  const set = (txt, dis)=>{
+    if(isPdf) return setPdfBtns(txt, dis);
+    if(txt !== null) btn.textContent = txt;
+    if(dis !== null) btn.disabled = dis;
+  };
   const label = btn.textContent;
-  btn.disabled = true;
+  set(null, true);
   const grid = document.getElementById("sheetgrid");
   grid.innerHTML = "";
   for(let i=0;i<PDF_VIEWS.length;i++){
     const [name, az, el] = PDF_VIEWS[i];
-    btn.textContent = "Rendering " + (i+1) + "/" + PDF_VIEWS.length;
+    set("Rendering " + (i+1) + "/" + PDF_VIEWS.length, null);
     await new Promise(r=>setTimeout(r,30));
     setView(az, el);
     camera.updateMatrixWorld(true);
@@ -1051,8 +1076,7 @@ async function buildSheet(btn){
     grid.appendChild(fig);
   }
   document.getElementById("sheet").dataset.open = "true";
-  btn.textContent = label;
-  btn.disabled = false;
+  set(label, false);
   setView(148,16);
 }
 
@@ -1062,7 +1086,7 @@ async function exportPDF(btn){
   const Ctor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if(!Ctor){ return buildSheet(btn); }
   const label = btn.textContent;
-  btn.disabled = true;
+  setPdfBtns(null, true);            // both copies, so neither starts a second run
   const doc = new Ctor({orientation:"landscape", unit:"mm", format:"a4"});
   const PW = 297, PH = 210, M = 7;                 // slim margins
   // Capture at the page's own aspect. The on-screen canvas is far wider than
@@ -1079,7 +1103,7 @@ async function exportPDF(btn){
   camera.aspect = CW / CH; camera.updateProjectionMatrix();
   for(let i=0;i<PDF_VIEWS.length;i++){
     const [name, az, el] = PDF_VIEWS[i];
-    btn.textContent = "Rendering " + (i+1) + "/" + PDF_VIEWS.length;
+    setPdfBtns("Rendering " + (i+1) + "/" + PDF_VIEWS.length, null);
     await new Promise(r=>setTimeout(r,30));
     setView(az, el, 1.04);          // tight - the boat should fill the page
     camera.updateMatrixWorld(true); controls.update();
@@ -1121,12 +1145,11 @@ async function exportPDF(btn){
     doc.text(String((p._chip && p._chip.style.background) || p.def), M+75, y);
     y += 5.4;
   });
-  btn.textContent = "Saving\u2026";
+  setPdfBtns("Saving\u2026", null);
   let saved = false;
   try{ doc.save("Salty-Seamen-" + (waterOn ? "on-water" : "studio") + ".pdf"); saved = true; }
   catch(e){ saved = false; }
-  btn.disabled = false;
-  btn.textContent = label;
+  setPdfBtns(label, false);
   setView(148,16);
   if(!saved) buildSheet(btn);          // sandboxed: show the sheet instead
 }
