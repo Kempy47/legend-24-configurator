@@ -132,6 +132,20 @@ input[type=color]{
   background:none;cursor:pointer;
 }
 .toggles{display:flex;flex-wrap:wrap;gap:7px}
+.toggles button.primary, .views button.primary, #scene button.primary{
+  background:linear-gradient(180deg,#4a9ce8 0%,#2f7fd0 48%,#1f62b4 100%);
+  border-color:#1a56a0; color:#fff; font-weight:500;
+  box-shadow:0 1px 2px rgba(16,50,95,.28), inset 0 1px 0 rgba(255,255,255,.30);
+}
+#scene button.primary:hover{
+  background:linear-gradient(180deg,#5aa9ee 0%,#3a8ad9 48%,#2870c2 100%);
+  border-color:#1a56a0; color:#fff;
+}
+#scene button.primary:active{
+  background:linear-gradient(180deg,#2f7fd0 0%,#1f62b4 100%);
+  box-shadow:inset 0 2px 4px rgba(10,35,70,.35);
+}
+#scene button.primary:disabled{opacity:.75;cursor:progress}
 .toggles button, .views button{
   font-family:"IBM Plex Mono",monospace;font-size:.62rem;letter-spacing:.10em;
   text-transform:uppercase;padding:7px 11px;border-radius:2px;cursor:pointer;
@@ -315,7 +329,7 @@ const VIEWS = {
   "Bow on":[180,8], "Plan":[90,84], "Helm":[null,null],
 };
 
-let scene, camera, renderer, controls, root, box, sphere, groundPlane;
+let scene, camera, renderer, controls, root, box, sphere, groundPlane, studioEnv;
 const matsByName = new Map();
 const groupObjs = new Map();
 const hullUniforms = {
@@ -356,7 +370,8 @@ function init(){
   const eq = new THREE.CanvasTexture(c);
   eq.mapping = THREE.EquirectangularReflectionMapping;
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromEquirectangular(eq).texture;
+  studioEnv = pmrem.fromEquirectangular(eq).texture;
+  scene.environment = studioEnv;
   pmrem.dispose(); eq.dispose();
 
   scene.add(new THREE.HemisphereLight(0xe6eef4, 0x59606a, 0.42));
@@ -562,15 +577,55 @@ function prepareDeckMaterial(){
 /* ---- "on the water" scene: a reflective plane at the boat's waterline
    plus a sky background, swapped in and out against the studio ---- */
 const WATERLINE = 0.400;                 // metres above the keel baseline
-let water = null, skyTex = null, waterOn = false;
+let water = null, skyTex = null, studioTex = null, waterOn = false;
 const waterU = { uT:{value:0} };
 
-function gradientTexture(stops){
-  const c = document.createElement("canvas"); c.width = 8; c.height = 256;
+function gradientTexture(stops, w){
+  const c = document.createElement("canvas"); c.width = w || 8; c.height = 512;
   const ctx = c.getContext("2d");
-  const g = ctx.createLinearGradient(0,0,0,256);
+  const g = ctx.createLinearGradient(0,0,0,512);
   stops.forEach(([p,col])=>g.addColorStop(p,col));
-  ctx.fillStyle = g; ctx.fillRect(0,0,8,256);
+  ctx.fillStyle = g; ctx.fillRect(0,0,c.width,512);
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  return t;
+}
+
+/* A tropical sky with a sun glow near the horizon, so the water has something
+   worth reflecting. */
+function skyTexture(){
+  const W = 1024, H = 512;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0.00, "#062a63");
+  g.addColorStop(0.22, "#14509d");
+  g.addColorStop(0.40, "#3d81c8");
+  g.addColorStop(0.470,"#6ba6d8");
+  g.addColorStop(0.499,"#9ec6e2");
+  g.addColorStop(0.512,"#2f6f9b");
+  g.addColorStop(0.70, "#134f6f");
+  g.addColorStop(1.00, "#08293a");
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // sun glow just above the horizon
+  const sx = W * 0.30, sy = H * 0.34;
+  const sun = ctx.createRadialGradient(sx, sy, 0, sx, sy, H * 0.30);
+  sun.addColorStop(0.00, "rgba(255,251,236,0.72)");
+  sun.addColorStop(0.08, "rgba(255,244,208,0.30)");
+  sun.addColorStop(0.30, "rgba(255,236,190,0.09)");
+  sun.addColorStop(1.00, "rgba(255,236,190,0)");
+  ctx.fillStyle = sun; ctx.fillRect(0,0,W,H);
+  // soft cloud band
+  ctx.globalAlpha = 0.13;
+  for(let i=0;i<70;i++){
+    const x = Math.random()*W, y = H*(0.10 + Math.random()*0.28);
+    const r = 20 + Math.random()*90;
+    const cg = ctx.createRadialGradient(x,y,0,x,y,r);
+    cg.addColorStop(0,"rgba(255,255,255,0.85)");
+    cg.addColorStop(1,"rgba(255,255,255,0)");
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
   const t = new THREE.CanvasTexture(c);
   t.mapping = THREE.EquirectangularReflectionMapping;
   return t;
@@ -578,8 +633,8 @@ function gradientTexture(stops){
 
 function buildWater(){
   const mat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color("#15414E").convertSRGBToLinear(),
-    roughness: 0.045, metalness: 0.0, envMapIntensity: 1.35,
+    color: new THREE.Color("#05293d").convertSRGBToLinear(),
+    roughness: 0.085, metalness: 0.0, envMapIntensity: 0.92,
   });
   mat.onBeforeCompile = (sh)=>{
     sh.uniforms.uT = waterU.uT;
@@ -591,9 +646,22 @@ function buildWater(){
       .replace("#include <common>", "#include <common>\nvarying vec3 vWP;\nuniform float uT;")
       .replace("#include <normal_fragment_begin>",
         "#include <normal_fragment_begin>\n" +
-        "normal = normalize(normal + vec3(" +
-        "  sin(vWP.x*1.9 + uT*0.9)*0.030 + sin(vWP.z*3.1 - uT*0.6)*0.018, 0.0," +
-        "  cos(vWP.z*1.7 + uT*0.7)*0.030 + cos(vWP.x*2.7 + uT*0.5)*0.018));");
+        // several non-harmonic octaves at angles, so no obvious repeat
+        // fade the fine octaves out with distance, or they alias into
+        // moire bands across the far water
+        "vec2 wp = vWP.xz;" +
+        "float dcam = length(vWP - cameraPosition);" +
+        "float k1 = exp(-dcam*0.0065), k2 = exp(-dcam*0.020);" +
+        "float k3 = exp(-dcam*0.055), k4 = exp(-dcam*0.130);" +
+        "float rx = sin(dot(wp, vec2(0.93, 0.37))*1.21 + uT*0.51)*0.030*k1" +
+        "         + sin(dot(wp, vec2(-0.41, 0.91))*2.07 - uT*0.39)*0.020*k2" +
+        "         + sin(dot(wp, vec2(0.71,-0.70))*4.73 + uT*0.88)*0.011*k3" +
+        "         + sin(dot(wp, vec2(0.24, 0.97))*9.31 + uT*1.43)*0.005*k4;" +
+        "float rz = cos(dot(wp, vec2(0.37,-0.93))*1.37 + uT*0.44)*0.030*k1" +
+        "         + cos(dot(wp, vec2(0.88, 0.47))*2.63 + uT*0.33)*0.020*k2" +
+        "         + cos(dot(wp, vec2(-0.66,0.75))*5.41 - uT*0.79)*0.011*k3" +
+        "         + cos(dot(wp, vec2(0.97,-0.24))*11.7 + uT*1.29)*0.005*k4;" +
+        "normal = normalize(normal + vec3(rx, 0.0, rz));");
   };
   water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000, 1, 1), mat);
   water.rotation.x = -Math.PI/2;
@@ -601,14 +669,17 @@ function buildWater(){
   water.receiveShadow = false;
   water.visible = false;
   scene.add(water);
-  skyTex = gradientTexture([[0,"#6ea8d8"],[0.42,"#b9d3e6"],[0.5,"#dfe9ef"],[1,"#eef3f6"]]);
+  skyTex = skyTexture();
+  studioTex = gradientTexture([[0,"#f7f9fa"],[0.5,"#e4eaee"],[1,"#cfd7dd"]]);
 }
 
 function setWater(on){
   waterOn = on;
   if(water) water.visible = on;
   if(groundPlane) groundPlane.visible = !on;
-  scene.background = on ? skyTex : null;
+  // never leave the background transparent: JPEG capture turns it black
+  scene.background = on ? skyTex : studioTex;
+  scene.environment = on ? skyTex : studioEnv;
   document.getElementById("stage").classList.toggle("afloat", on);
 }
 
@@ -794,7 +865,7 @@ function buildUI(){
   };
   scn.appendChild(wb);
   const pb = document.createElement("button");
-  pb.type = "button"; pb.textContent = "Download PDF";
+  pb.type = "button"; pb.textContent = "Download PDF"; pb.className = "primary";
   pb.title = "Every angle in the current colours, as a PDF";
   pb.onclick = ()=>exportPDF(pb);
   scn.appendChild(pb);
@@ -878,11 +949,18 @@ function helmView(){
 const clock = new THREE.Clock();
 /* ---- PDF of every angle, in whatever colours and scene are set ---- */
 const PDF_VIEWS = [
-  ["Bow quarter, port", 148, 16], ["Port beam", 90, 6],
-  ["Stern quarter, port", 40, 18], ["Stern on", 0, 12],
-  ["Stern quarter, starboard", 320, 18], ["Starboard beam", 270, 6],
-  ["Bow quarter, starboard", 212, 16], ["Bow on", 180, 9],
-  ["High bow quarter", 152, 38], ["Plan view", 90, 84],
+  // eye level, all round
+  ["Bow quarter, port",        148, 14], ["Port beam",                90,  6],
+  ["Stern quarter, port",       40, 16], ["Stern on",                  0, 11],
+  ["Stern quarter, starboard", 320, 16], ["Starboard beam",          270,  6],
+  ["Bow quarter, starboard",   212, 14], ["Bow on",                  180,  9],
+  // aerials - the set that shows the whole layout
+  ["Aerial, bow quarter port",      150, 34], ["Aerial, port beam",        90, 34],
+  ["Aerial, stern quarter port",     42, 34], ["Aerial, stern",             0, 36],
+  ["Aerial, stern quarter stbd",    318, 34], ["Aerial, starboard beam",  270, 34],
+  ["Aerial, bow quarter stbd",      210, 34], ["Aerial, bow",             180, 36],
+  ["High aerial, bow quarter",      150, 56], ["High aerial, stern quarter", 40, 56],
+  ["Overhead, three-quarter",       120, 72], ["Plan view",                90, 88],
 ];
 
 /* The artifact sandbox blocks downloads AND pop-ups, so a PDF cannot be
@@ -925,7 +1003,13 @@ async function exportPDF(btn){
   const label = btn.textContent;
   btn.disabled = true;
   const doc = new Ctor({orientation:"landscape", unit:"mm", format:"a4"});
-  const PW = 297, PH = 210, M = 12;
+  const PW = 297, PH = 210, M = 7;                 // slim margins
+  // Capture at the page's own aspect. The on-screen canvas is far wider than
+  // A4, so a straight grab left deep white bands and a small picture.
+  const CW = 2400, CH = Math.round(CW * (PH - M*2 - 9) / (PW - M*2));
+  const prevW = renderer.domElement.clientWidth, prevH = renderer.domElement.clientHeight;
+  renderer.setSize(CW, CH, false);
+  camera.aspect = CW / CH; camera.updateProjectionMatrix();
   for(let i=0;i<PDF_VIEWS.length;i++){
     const [name, az, el] = PDF_VIEWS[i];
     btn.textContent = "Rendering " + (i+1) + "/" + PDF_VIEWS.length;
@@ -936,32 +1020,34 @@ async function exportPDF(btn){
     const img = renderer.domElement.toDataURL("image/jpeg", 0.9);
     if(i) doc.addPage();
     const cw = renderer.domElement.width, ch = renderer.domElement.height;
-    const sc = Math.min((PW-M*2)/cw, (PH-M*2-12)/ch);
+    const sc = Math.min((PW-M*2)/cw, (PH-M*2-9)/ch);
     doc.addImage(img, "JPEG", (PW-cw*sc)/2, M, cw*sc, ch*sc);
     doc.setFontSize(9); doc.setTextColor(60);
     doc.text("Supercraft Legend 24  \u00b7  " + name +
              (waterOn ? "  \u00b7  on the water" : "  \u00b7  studio"), M, PH-M);
     doc.text((i+1) + " / " + PDF_VIEWS.length, PW-M, PH-M, {align:"right"});
   }
+  renderer.setSize(prevW, prevH, false);
+  camera.aspect = prevW / prevH; camera.updateProjectionMatrix();
   doc.addPage();
   doc.setFontSize(16); doc.setTextColor(20);
-  doc.text("Supercraft Legend 24 \u2014 specification", M, M+8);
+  doc.text("Supercraft Legend 24 \u2014 specification", M+5, M+14);
   doc.setFontSize(9); doc.setTextColor(70);
-  let y = M+20;
+  let y = M+28;
   [["Length overall","7.925 m (26 ft)"],["Hull length","7.315 m (24 ft)"],
    ["Beam","2.400 m"],["Dolphin nose","0.610 m pulpit"],
    ["Engines","2 \u00d7 Suzuki 115 hp"],["Built","Mauritius, 2004"],
    ["SeaDek floor", deckU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["SeaDek wall tops", wallU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
-  ].forEach(([k,v])=>{ doc.text(k, M, y); doc.text(v, M+70, y); y += 6; });
-  y += 4; doc.setTextColor(20); doc.text("Colours", M, y); y += 6;
+  ].forEach(([k,v])=>{ doc.text(k, M+5, y); doc.text(v, M+75, y); y += 6; });
+  y += 4; doc.setTextColor(20); doc.text("Colours", M+5, y); y += 6;
   doc.setTextColor(70);
   PARTS.forEach(p=>{
     if(p.key === "__HULL_ALL__") return;
     if(p._wrap && p._wrap.style.display === "none") return;
-    if(y > PH-M){ doc.addPage(); y = M+10; }
-    doc.text(p.label.replace(/&amp;/g,"&"), M, y);
-    doc.text(String((p._chip && p._chip.style.background) || p.def), M+70, y);
+    if(y > PH-M-6){ doc.addPage(); y = M+16; }
+    doc.text(p.label.replace(/&amp;/g,"&"), M+5, y);
+    doc.text(String((p._chip && p._chip.style.background) || p.def), M+75, y);
     y += 5.4;
   });
   btn.textContent = "Saving\u2026";
