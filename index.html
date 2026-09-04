@@ -812,7 +812,8 @@ function buildBaitBoard(root){
 const BBQ_LEN = 0.520, BBQ_DEP = 0.330, BBQ_H = 0.195;
 const BBQ_LID = 0.115, BBQ_CH = 0.045, BBQ_WALL = 0.008;
 const BBQ_OPEN = 1.75;                      // lid, 100 deg back off the rim
-const STEM_ANG = 0.663, STEM_LEN = 0.360;   // 38 deg out, and how far
+const STEM_ANG = 1.047, STEM_LEN = 0.180;   // 60 deg out, and how far
+const STEM_OUT = 0.205;                     // bracket reach past the stem top
 
 /* a panel with its top corners cut off - the end plates and the lid ends,
    which is what gives this grill its outline */
@@ -862,24 +863,28 @@ function buildBbq(root){
   }
 
   // ---- stem: down the bore, then out over the water ----------------------
+  // Short and steeply raked rather than long: a long one carried the grate
+  // 1.27 m above the sole, which is chin height on anyone normal. This puts
+  // it at 1.06 m, and the bracket reaches out past the stem top so the
+  // firebox still clears the rubrail.
   tube(0.180, 0.021, "y", steel, 0, -0.010, 0);
   part(new THREE.BoxGeometry(0.046, 0.052, 0.046), black, 0, 0.105, 0);
   tube(0.056, 0.011, "x", black, 0, 0.105, 0);      // the pivot bolt
   const sy = Math.cos(STEM_ANG), sz = Math.sin(STEM_ANG);
-  const armY = 0.130 + sy*STEM_LEN, armZ = sz*STEM_LEN;
-  tube(STEM_LEN, 0.019, "y", steel, 0, 0.130 + sy*STEM_LEN/2, sz*STEM_LEN/2)
+  const armY = 0.125 + sy*STEM_LEN, armZ = sz*STEM_LEN;
+  tube(STEM_LEN, 0.019, "y", steel, 0, 0.125 + sy*STEM_LEN/2, sz*STEM_LEN/2)
     .rotation.x = STEM_ANG;
   part(new THREE.BoxGeometry(0.044, 0.050, 0.044), black, 0, armY, armZ);
   tube(0.054, 0.011, "x", black, 0, armY, armZ);    // and the second one
 
-  const yBox = armY + 0.055;                 // firebox floor
-  const zc = armZ + 0.012;                   // and its centre, over the water
+  const yBox = armY + 0.045;                 // firebox floor
+  const zc = armZ + STEM_OUT;                // and its centre, over the water
   const D2 = BBQ_DEP/2, L2 = BBQ_LEN/2, yMid = yBox + BBQ_H/2;
 
-  // yoke plates carrying the box off the knuckle
+  // the bracket webs, running out from the knuckle to under the firebox
   [-1, 1].forEach(sd=>{
-    part(new THREE.BoxGeometry(0.009, 0.070, 0.048), steel,
-         sd*0.052, armY + 0.028, armZ);
+    part(new THREE.BoxGeometry(0.009, yBox - armY + 0.030, STEM_OUT + 0.030), steel,
+         sd*0.052, (armY + yBox)/2 - 0.008, armZ + STEM_OUT/2 - 0.010);
   });
 
   // ---- firebox -----------------------------------------------------------
@@ -927,22 +932,29 @@ function buildBbq(root){
   lid.position.set(0, yBox + BBQ_H, zc + D2);
   lid.rotation.x = BBQ_OPEN;
   g.add(lid);
-  part(new THREE.BoxGeometry(BBQ_LEN, 0.008, BBQ_DEP), steel, 0, 0.004, -D2, lid);
+  // The skin goes on the OUTSIDE and all four sides are closed - a lid is a
+  // box open on its underside only. Skinning the inside and leaving the
+  // hinge edge open is what left it gaping open at the front.
+  part(new THREE.BoxGeometry(BBQ_LEN, 0.008, BBQ_DEP), steel,
+       0, BBQ_LID - 0.004, -D2, lid);
   [-1, 1].forEach(sd=>{
     const m = part(chamferPlate(BBQ_DEP, BBQ_LID, BBQ_CH, BBQ_WALL), steel,
                    sd*L2 + (sd<0 ? BBQ_WALL : 0), 0, -D2, lid);
     m.rotation.y = -Math.PI/2;
   });
-  part(new THREE.BoxGeometry(BBQ_LEN, BBQ_LID - BBQ_CH*0.5, BBQ_WALL), steel,
-       0, (BBQ_LID - BBQ_CH*0.5)/2, -BBQ_DEP + BBQ_WALL/2, lid);
-  // gauge
-  tube(0.014, 0.032, "y", steel, 0, 0.007, -BBQ_DEP*0.40, lid);
-  tube(0.008, 0.024, "y", black, 0, 0.016, -BBQ_DEP*0.40, lid);
+  const lh = BBQ_LID - BBQ_CH*0.5;
+  part(new THREE.BoxGeometry(BBQ_LEN, lh, BBQ_WALL), steel,
+       0, lh/2, -BBQ_DEP + BBQ_WALL/2, lid);
+  part(new THREE.BoxGeometry(BBQ_LEN, lh, BBQ_WALL), steel,
+       0, lh/2, -BBQ_WALL/2, lid);
+  // gauge, on the outside where you can read it
+  tube(0.014, 0.032, "y", steel, 0, BBQ_LID + 0.005, -BBQ_DEP*0.40, lid);
+  tube(0.008, 0.024, "y", black, 0, BBQ_LID + 0.012, -BBQ_DEP*0.40, lid);
   // handle, a squared loop standing off the lid
   [-1, 1].forEach(sd=>{
-    tube(0.062, 0.008, "y", steel, sd*0.110, 0.031, -BBQ_DEP*0.80, lid);
+    tube(0.062, 0.008, "y", steel, sd*0.110, BBQ_LID + 0.031, -BBQ_DEP*0.80, lid);
   });
-  tube(0.236, 0.010, "x", steel, 0, 0.062, -BBQ_DEP*0.80, lid);
+  tube(0.236, 0.010, "x", steel, 0, BBQ_LID + 0.062, -BBQ_DEP*0.80, lid);
 
   g.position.set(seat.x, seat.top, seat.z);
   if(seat.z < 0) g.rotation.y = Math.PI;     // turn local +Z outboard
