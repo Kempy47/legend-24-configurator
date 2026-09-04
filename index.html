@@ -723,26 +723,26 @@ const BAIT_FENCE = 0.055, BAIT_FT = 0.012;
 const BAIT_RISE = 0.215;      // underside of the tray above the holder rim
 const BAIT_DROP = 0.100;      // how far the post goes down the bore
 
-/* The aftmost rod holder to port, found rather than named. Port is -z: the
-   bow is +x and up is +y, so left-facing-forward is -z. Do NOT take this
-   from the mesh names - the model builds Blender +y as "_S", and Blender +y
-   exports to glTF -z, so everything named _S is in fact the port side and
-   everything named _P is starboard. */
-function aftPortHolder(root){
+/* The aftmost rod holder on one side, found rather than named. side -1 is
+   port, +1 starboard: the bow is +x and up is +y, so left-facing-forward is
+   -z. Do NOT take this from the mesh names - the model builds Blender +y as
+   "_S", and Blender +y exports to glTF -z, so everything named _S is in fact
+   the port side and everything named _P is starboard. */
+function aftHolder(root, side){
   let seat = null;
   const bb = new THREE.Box3(), c = new THREE.Vector3();
   root.traverse(o=>{
     if(!o.isMesh || !/^RodHolder/.test(o.name)) return;
     o.updateWorldMatrix(true, false);
     bb.setFromObject(o); bb.getCenter(c);
-    if(c.z >= 0) return;                       // starboard side
+    if(c.z * side <= 0) return;                // the other side
     if(!seat || c.x < seat.x) seat = {x:c.x, z:c.z, top:bb.max.y};
   });
   return seat;
 }
 
 function buildBaitBoard(root){
-  const seat = aftPortHolder(root);
+  const seat = aftHolder(root, -1);           // port
   if(!seat) return null;
 
   const white = new THREE.MeshStandardMaterial({
@@ -803,12 +803,13 @@ function buildBaitBoard(root){
 /* ---- rail BBQ, in the same aft port rod holder ----
    Built in a local frame with +Z outboard and the origin on the holder rim,
    then turned to face the right way. That keeps the lid hinge and the stem
-   from having to know which side of the boat they are on.
+   from having to know which side of the boat they are on - which is what
+   lets it sit in the starboard holder while the bait board keeps the port
+   one, so both can be fitted at once.
 
    The stem is deliberately not vertical: it drops into the bore, then breaks
    outboard at a knuckle so the firebox hangs clear of the gunwale and sits
-   over the water, not over the deck. Only one thing fits in a rod holder, so
-   this and the bait board turn each other off. */
+   over the water, not over the deck. */
 const BBQ_LEN = 0.520, BBQ_DEP = 0.330, BBQ_H = 0.195;
 const BBQ_LID = 0.115, BBQ_CH = 0.045, BBQ_WALL = 0.008;
 const BBQ_OPEN = 1.75;                      // lid, 100 deg back off the rim
@@ -830,7 +831,8 @@ function chamferPlate(w, h, ch, t){
 }
 
 function buildBbq(root){
-  const seat = aftPortHolder(root);
+  const seat = aftHolder(root, +1);           // starboard, so the bait board
+                                              // can stay on the port holder
   if(!seat) return null;
 
   const steel = new THREE.MeshStandardMaterial({
@@ -959,13 +961,12 @@ function buildBbq(root){
   g.position.set(seat.x, seat.top, seat.z);
   if(seat.z < 0) g.rotation.y = Math.PI;     // turn local +Z outboard
   g.visible = false;
-  console.log("[configurator] bbq on the port rod holder at x " +
+  console.log("[configurator] bbq on the starboard rod holder at x " +
               seat.x.toFixed(2) + ", z " + seat.z.toFixed(2));
   return g;
 }
 
 function setBbq(on){
-  if(on && baitBoard && baitBoard.visible) setBait(false);   // one holder
   if(bbq) bbq.visible = on;
   if(bbqBtn) bbqBtn.setAttribute("aria-pressed", String(on));
   const p = PARTS.find(x=>x.key === "Bbq");
@@ -976,7 +977,6 @@ function setBbq(on){
 }
 
 function setBait(on){
-  if(on && bbq && bbq.visible) setBbq(false);                // one holder
   if(baitBoard) baitBoard.visible = on;
   if(baitBtn) baitBtn.setAttribute("aria-pressed", String(on));
   const p = PARTS.find(x=>x.key === "BaitBoard");
@@ -1497,8 +1497,7 @@ function buildUI(){
 
   bbqBtn = document.createElement("button");
   bbqBtn.type = "button"; bbqBtn.textContent = "BBQ";
-  bbqBtn.title = "Rail BBQ in the aft port rod holder \u2014 shares the holder "
-               + "with the bait board";
+  bbqBtn.title = "Rail BBQ in the aft starboard rod holder";
   bbqBtn.onclick = ()=>setBbq(!(bbq && bbq.visible));
   dm.appendChild(bbqBtn);
 
@@ -1819,7 +1818,7 @@ async function exportPDF(btn){
    ["Bait board", baitBoard && baitBoard.visible
        ? "610 \u00d7 320 mm, aft port rod holder" : "Not fitted"],
    ["BBQ", bbq && bbq.visible
-       ? "520 \u00d7 330 mm, aft port rod holder" : "Not fitted"],
+       ? "520 \u00d7 330 mm, aft starboard rod holder" : "Not fitted"],
    ["Backrests", !backrestsFitted ? "Not fitted"
        : (backrestU.uQOn.value>0.5
            ? "Diamond quilted centre, plain border, contrast stitch" : "Plain")],
