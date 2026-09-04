@@ -306,6 +306,7 @@ const LABELS = {
   "GunwaleTop":    ["deck", "Wall tops &amp; dolphin nose"],
   "InnerWalls":    ["deck", "Inner walls"],
   "Stainless":     ["deck", "Rails &amp; fittings"],
+  "BaitBoard":     ["deck", "Bait board"],
   "EngineBlack":   ["eng",  "Engine cowls"],
   "EngineGrey":    ["eng",  "Engine lower unit"],
   "IntakeVent":    ["eng",  "Engine intake"],
@@ -317,7 +318,7 @@ const LABELS = {
 };
 const ORDER = ["__HULL_ALL__","__HULL_WHITE__","__HULL_NAVY__","Rubrail",
   "BiminiCanvas","Cushions","Backrests","__STITCH__","Bolsters","SeatVinyl","SeatBase",
-  "DeckNonskid","GunwaleTop","InnerWalls","ConsoleGel","Stainless",
+  "DeckNonskid","GunwaleTop","InnerWalls","ConsoleGel","Stainless","BaitBoard",
   "EngineBlack","EngineGrey","IntakeVent","DecalWhite",
   "Display","GaugeFace","MatteBlack","WheelGrip"];
 let PARTS = [];
@@ -336,6 +337,7 @@ const VIEWS = {
 
 let scene, camera, renderer, controls, root, box, sphere, groundPlane, studioEnv;
 let backrestsFitted = false, quiltBtn = null, setBackrests = null;
+let baitBoard = null, baitBtn = null;
 const matsByName = new Map();
 const groupObjs = new Map();
 const hullUniforms = {
@@ -445,6 +447,9 @@ function loadModel(){
       });
     });
     bakePanelEdges(root);
+    baitBoard = buildBaitBoard(root);
+    if(baitBoard) root.add(baitBoard);       // before the box, so a view that
+                                             // frames the boat frames it too
     prepareHullMaterial();
     buildParts();
     scene.add(root);
@@ -703,6 +708,87 @@ const QUILT_MAXB    = 0.155;   // ...but never more than this much of a short
                                // panel's height, which is what sets the
                                // border on the 214 mm side backrests
 const QUILT_SUB     = 4;       // lattice steps along a triangle edge
+
+/* ---- preparation board, 610 x 320, in the aft port rod holder ----
+   Built here rather than in the model: it is an accessory that comes and
+   goes, and the rod holder it drops into is already in the mesh, so the
+   mount can be read off that instead of being a second set of numbers to
+   keep in step with it. */
+const BAIT_LEN = 0.610, BAIT_DEP = 0.320, BAIT_T = 0.014;
+const BAIT_FENCE = 0.055, BAIT_FT = 0.012;
+const BAIT_RISE = 0.215;      // underside of the tray above the holder rim
+const BAIT_DROP = 0.100;      // how far the post goes down the bore
+
+function buildBaitBoard(root){
+  // the aftmost rod holder on the port side, found rather than named
+  let seat = null;
+  const bb = new THREE.Box3(), c = new THREE.Vector3();
+  root.traverse(o=>{
+    if(!o.isMesh || !/^RodHolder/.test(o.name)) return;
+    o.updateWorldMatrix(true, false);
+    bb.setFromObject(o); bb.getCenter(c);
+    if(c.z <= 0) return;                       // starboard side
+    if(!seat || c.x < seat.x) seat = {x:c.x, z:c.z, top:bb.max.y};
+  });
+  if(!seat) return null;
+
+  const white = new THREE.MeshStandardMaterial({
+    color: new THREE.Color("#F5F3EE").convertSRGBToLinear(),
+    roughness: 0.34, metalness: 0.0,
+  });
+  white.name = "BaitBoard";
+  matsByName.set("BaitBoard", [white]);
+  const steel = (matsByName.get("Stainless") || [])[0] || white;
+  const black = (matsByName.get("EngineBlack") || [])[0] || steel;
+
+  const g = new THREE.Group();
+  g.name = "BaitBoard";
+  function part(geo, mat, x, y, z){
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    g.add(m);
+  }
+  const zIn  = seat.z - 0.045;              // just inboard of the rail
+  const zOut = zIn + BAIT_DEP;              // overhanging the water
+  const zMid = (zIn + zOut) / 2;
+  const yBase = seat.top + BAIT_RISE;       // underside of the tray
+
+  part(new THREE.BoxGeometry(BAIT_LEN, BAIT_T, BAIT_DEP), white,
+       seat.x, yBase + BAIT_T/2, zMid);
+  // fence along the inboard edge and both ends; the outboard edge is left
+  // open, so anything swept off it goes over the side rather than inboard
+  part(new THREE.BoxGeometry(BAIT_LEN, BAIT_FENCE, BAIT_FT), white,
+       seat.x, yBase + BAIT_T + BAIT_FENCE/2, zIn + BAIT_FT/2);
+  [-1, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(BAIT_FT, BAIT_FENCE, BAIT_DEP), white,
+         seat.x + sd*(BAIT_LEN/2 - BAIT_FT/2),
+         yBase + BAIT_T + BAIT_FENCE/2, zMid);
+  });
+  part(new THREE.BoxGeometry(BAIT_LEN, 0.030, BAIT_FT), white,
+       seat.x, yBase - 0.015, zOut - BAIT_FT/2);
+
+  const postLen = BAIT_RISE + BAIT_DROP;
+  const post = new THREE.CylinderGeometry(0.020, 0.020, postLen, 20);
+  part(post, steel, seat.x, seat.top + (BAIT_RISE - BAIT_DROP)/2, seat.z);
+  part(new THREE.BoxGeometry(0.052, 0.050, 0.052), black,
+       seat.x, yBase - 0.028, seat.z);
+
+  g.visible = false;
+  console.log("[configurator] bait board on the rod holder at x " +
+              seat.x.toFixed(2) + ", z " + seat.z.toFixed(2));
+  return g;
+}
+
+function setBait(on){
+  if(baitBoard) baitBoard.visible = on;
+  if(baitBtn) baitBtn.setAttribute("aria-pressed", String(on));
+  const p = PARTS.find(x=>x.key === "BaitBoard");
+  if(p && p._wrap){
+    p._wrap.style.display = on ? "" : "none";
+    if(!on) p._wrap.classList.remove("open");
+  }
+}
 
 function bakePanelEdges(root){
   const t0 = performance.now();
@@ -1207,6 +1293,13 @@ function buildUI(){
   };
   dm.appendChild(ob);
 
+  baitBtn = document.createElement("button");
+  baitBtn.type = "button"; baitBtn.textContent = "Bait board";
+  baitBtn.title = "610 \u00d7 320 mm preparation board, in the aft port rod holder";
+  baitBtn.onclick = ()=>setBait(!(baitBoard && baitBoard.visible));
+  dm.appendChild(baitBtn);
+  setBait(false);
+
   // optional upholstery: its own add/remove buttons, next to its colours
   const ft = document.getElementById("fitted");
   [["Add backrests", "backrests", false],
@@ -1318,6 +1411,7 @@ function buildUI(){
       if(i === 0) backrestsFitted = on;
     });
     setQuilt(false);
+    setBait(false);
     setView(148,16);
   };
 
@@ -1516,6 +1610,8 @@ async function exportPDF(btn){
    ["Engines","2 \u00d7 Suzuki 115 hp"],["Built","Mauritius, 2004"],
    ["SeaDek floor", deckU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["SeaDek wall tops", wallU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
+   ["Bait board", baitBoard && baitBoard.visible
+       ? "610 \u00d7 320 mm, aft port rod holder" : "Not fitted"],
    ["Backrests", !backrestsFitted ? "Not fitted"
        : (backrestU.uQOn.value>0.5
            ? "Diamond quilted centre, plain border, contrast stitch" : "Plain")],
