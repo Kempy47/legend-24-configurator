@@ -584,7 +584,7 @@ const STITCH_DEF = "#EDEBE4";        // ivory thread on dark vinyl
 const backrestU = {
   uQOn:{value:0.0},
   uQStitch:{value:new THREE.Color(STITCH_DEF).convertSRGBToLinear()},
-  uQBump:{value:0.050},              // puff height, in diamond widths
+  uQBump:{value:0.080},              // puff height, in diamond widths
   uQDash:{value:7.0},                // stitches per diagonal unit
   uQSeam:{value:0.012},              // half the thread width, in diamonds
 };
@@ -644,16 +644,24 @@ function makeQuilt(u){
         "  float lb = (1.0 - smoothstep(uQSeam - fw, uQSeam + fw, db)) * dsb;",
         "  float st = clamp(max(la, lb), 0.0, 1.0) * qIn;",
         // the line of stitching that closes the border, all the way round
-        "  float rw = fwidth(sEdge) * 0.5 + 0.0013;",
+        // unclamped, fwidth blows up where the panel turns away from the
+        // camera and the thread smears into a blob along the silhouette
+        "  float rw = min(fwidth(sEdge) * 0.5, 0.0030) + 0.0013;",
         "  float pr = (vQuiltQ.z + vQuiltQ.x) * uQDash * 1.41;",
         "  float dsr = mix(1.0 - smoothstep(0.28, 0.40, abs(fract(pr) - 0.5)),",
         "                  0.72, clamp(fwidth(pr) * 2.0, 0.0, 1.0));",
         "  float rim = (1.0 - smoothstep(rw*0.6, rw, abs(sEdge))) * dsr;",
         "  st = max(st, clamp(rim, 0.0, 1.0));",
         "  diffuseColor.rgb = mix(diffuseColor.rgb * mix(1.0, qShade, qIn), uQStitch, st);",
-        // h = cos(pi*sa)*cos(pi*sb): 1 at the middle of a diamond, 0 on the seam
-        "  float ha = -3.14159 * sin(3.14159*sa) * cos(3.14159*sb);",
-        "  float hb = -3.14159 * cos(3.14159*sa) * sin(3.14159*sb);",
+        // The puff has to sit on the SAME diamonds as the thread. sa and sb
+        // are zero ON a seam, so a height field built from them peaks on the
+        // seam and dips in the middle of each diamond - a second set of
+        // diamonds half a cell out from the stitched ones, which is what the
+        // two patterns crossing each other were. Shift by half a cell so the
+        // peak lands in the middle of the diamond the thread encloses.
+        "  float ca = fract(qa + 0.5) - 0.5, cb = fract(qb + 0.5) - 0.5;",
+        "  float ha = -3.14159 * sin(3.14159*ca) * cos(3.14159*cb);",
+        "  float hb = -3.14159 * cos(3.14159*ca) * sin(3.14159*cb);",
         "  qGrad = vec2(ha + hb, ha - hb) * qIn;",
         "}"].join("\n"))
       .replace("#include <normal_fragment_begin>",
@@ -688,10 +696,12 @@ function makeQuilt(u){
    All three interpolate cleanly, so the two rows the flat face has carry
    them exactly, and the fold down the middle of the border distance is
    rebuilt by taking the min after interpolating rather than before. */
-const QUILT_BORDER  = 0.229;   // plain border, metres (9 in)
+const QUILT_BORDER  = 0.051;   // plain border, metres (2 in)
 const QUILT_DIAMOND = 0.110;   // diamond height aimed for, before fitting
 const QUILT_ASPECT  = 1.35;    // taller than wide, the classic cut
-const QUILT_MAXB    = 0.35;    // border may not eat more of the panel than this
+const QUILT_MAXB    = 0.155;   // ...but never more than this much of a short
+                               // panel's height, which is what sets the
+                               // border on the 214 mm side backrests
 const QUILT_SUB     = 4;       // lattice steps along a triangle edge
 const GRAPH_R       = 0.250;   // plan-graph reach: must clear the panel's own
                                // depth, or the walk goes down one face and
@@ -827,6 +837,25 @@ function bakePanel(mesh){
     yB[i] = mn; yT[i] = mx;
   }
 
+  // ...and its left and right edge at each height. Without this the side
+  // border is a straight vertical cut at a fixed arc length, which on a
+  // backrest whose sides slant runs 2 in in at one height and off the edge
+  // at another - the border has to follow the contour, not the bounding box.
+  const orderY = Array.from({length:n0}, (_,i)=>i).sort((a,b)=>wp[a*3+1]-wp[b*3+1]);
+  const uL = new Float32Array(n0), uR = new Float32Array(n0);
+  for(let k=0, lo=0, hi=0; k<n0; k++){
+    const i = orderY[k], yi = wp[i*3+1];
+    while(lo < n0 && wp[orderY[lo]*3+1] < yi - STATION_W) lo++;
+    while(hi < n0 && wp[orderY[hi]*3+1] <= yi + STATION_W) hi++;
+    let mn = Infinity, mx = -Infinity;
+    for(let q=lo;q<hi;q++){
+      const uq = u[orderY[q]];
+      if(uq < mn) mn = uq;
+      if(uq > mx) mx = uq;
+    }
+    uL[i] = mn; uR[i] = mx;
+  }
+
   // --- border, and how many diamonds fit between the stitch lines ---
   const hs = [];
   for(let i=0;i<n0;i++) if(dEnd[i] > 0.05) hs.push(yT[i] - yB[i]);
@@ -836,8 +865,13 @@ function bakePanel(mesh){
   const band = H - 2*B;
   const rows = Math.max(1, Math.round(band / QUILT_DIAMOND));
   const wide = (band / rows) / QUILT_ASPECT;
+  // A long bench or bow backrest is quilted the whole way along - it runs out
+  // where the cushion tapers away, which is border enough. Only a panel with
+  // real ends, like the console front, gets a border on them too.
+  const strip = clen > H * 4.0;
   console.log("[configurator] " + mesh.name + ": panel " + Math.round(clen*1000) +
-    " x " + Math.round(H*1000) + " mm, border " + Math.round(B*1000) + " mm, " +
+    " x " + Math.round(H*1000) + " mm, border " + Math.round(B*1000) + " mm" +
+    (strip ? " (top and bottom only)" : " (all round)") + ", " +
     rows + " row(s) of " + Math.round(band/rows*1000) + " x " +
     Math.round(wide*1000) + " mm");
 
@@ -865,8 +899,10 @@ function bakePanel(mesh){
         WW.copy(PP).applyMatrix4(mw);
         const top = yT[a]*sw + yT[b]*uu + yT[c]*ww;
         const bot = yB[a]*sw + yB[b]*uu + yB[c]*ww;
-        const en  = dEnd[a]*sw + dEnd[b]*uu + dEnd[c]*ww;
         const al  = u[a]*sw + u[b]*uu + u[c]*ww;
+        const lu  = uL[a]*sw + uL[b]*uu + uL[c]*ww;
+        const ru  = uR[a]*sw + uR[b]*uu + uR[c]*ww;
+        const en  = strip ? 9.0 : Math.min(al - lu, ru - al);
         const hB = WW.y - bot, hT = top - WW.y;
         const bandHere = Math.max(top - bot - 2*B, 1e-4);
         outQ[vo*3]   = (hB - B) / bandHere * rows;      // 0 on the bottom stitch line
