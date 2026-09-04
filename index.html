@@ -802,13 +802,31 @@ function buildBaitBoard(root){
 
 /* ---- rail BBQ, in the same aft port rod holder ----
    Built in a local frame with +Z outboard and the origin on the holder rim,
-   then turned to face the right way. That keeps the lid hinge from having to
-   know which side of the boat it is on: it swings about local +X whichever
-   holder it lands in. Only one thing can be in a rod holder at a time, so
+   then turned to face the right way. That keeps the lid hinge and the stem
+   from having to know which side of the boat they are on.
+
+   The stem is deliberately not vertical: it drops into the bore, then breaks
+   outboard at a knuckle so the firebox hangs clear of the gunwale and sits
+   over the water, not over the deck. Only one thing fits in a rod holder, so
    this and the bait board turn each other off. */
-const BBQ_LEN = 0.520, BBQ_DEP = 0.330, BBQ_H = 0.200;
-const BBQ_WALL = 0.010, BBQ_RISE = 0.245;   // firebox floor above the rim
-const BBQ_LID = 0.095, BBQ_OPEN = 1.83;     // lid depth, and 105 deg open
+const BBQ_LEN = 0.520, BBQ_DEP = 0.330, BBQ_H = 0.195;
+const BBQ_LID = 0.115, BBQ_CH = 0.045, BBQ_WALL = 0.008;
+const BBQ_OPEN = 1.75;                      // lid, 100 deg back off the rim
+const STEM_ANG = 0.663, STEM_LEN = 0.360;   // 38 deg out, and how far
+
+/* a panel with its top corners cut off - the end plates and the lid ends,
+   which is what gives this grill its outline */
+function chamferPlate(w, h, ch, t){
+  const sh = new THREE.Shape();
+  sh.moveTo(-w/2, 0);
+  sh.lineTo( w/2, 0);
+  sh.lineTo( w/2, h - ch);
+  sh.lineTo( w/2 - ch, h);
+  sh.lineTo(-w/2 + ch, h);
+  sh.lineTo(-w/2, h - ch);
+  sh.closePath();
+  return new THREE.ExtrudeGeometry(sh, {depth:t, bevelEnabled:false});
+}
 
 function buildBbq(root){
   const seat = aftPortHolder(root);
@@ -816,7 +834,7 @@ function buildBbq(root){
 
   const steel = new THREE.MeshStandardMaterial({
     color: new THREE.Color("#B4B1A8").convertSRGBToLinear(),
-    roughness: 0.30, metalness: 0.55,
+    roughness: 0.28, metalness: 0.60,
   });
   steel.name = "Bbq";
   matsByName.set("Bbq", [steel]);
@@ -832,69 +850,99 @@ function buildBbq(root){
     return m;
   }
   function tube(len, r, axis, mat, x, y, z, host){
-    const m = part(new THREE.CylinderGeometry(r, r, len, 14), mat, x, y, z, host);
+    const m = part(new THREE.CylinderGeometry(r, r, len, 16), mat, x, y, z, host);
     if(axis === "x") m.rotation.z = Math.PI/2;
     if(axis === "z") m.rotation.x = Math.PI/2;
     return m;
   }
-
-  const zc = 0.135;                      // hangs clear of the rail, as it must
-  const yBox = BBQ_RISE;                 // firebox floor
-  const yMid = yBox + BBQ_H/2;
-  const D2 = BBQ_DEP/2, L2 = BBQ_LEN/2;
-
-  // post into the bore, and the yoke it hangs the firebox from
-  tube(BBQ_RISE + 0.100 - 0.070, 0.020, "y", steel, 0, (BBQ_RISE - 0.070 - 0.100)/2, 0);
-  part(new THREE.BoxGeometry(0.050, 0.055, 0.050), black, 0, yBox - 0.045, 0);
-  [-1, 1].forEach(sd=>{
-    part(new THREE.BoxGeometry(0.010, 0.070, 0.050), steel,
-         sd*0.055, yBox - 0.035, 0);
-  });
-
-  // firebox: floor, two ends, two sides
-  part(new THREE.BoxGeometry(BBQ_LEN, 0.012, BBQ_DEP), steel, 0, yBox + 0.006, zc);
-  [-1, 1].forEach(sd=>{
-    part(new THREE.BoxGeometry(BBQ_WALL, BBQ_H, BBQ_DEP), steel,
-         sd*(L2 - BBQ_WALL/2), yMid, zc);
-    part(new THREE.BoxGeometry(BBQ_LEN, BBQ_H, BBQ_WALL), steel,
-         0, yMid, zc + sd*(D2 - BBQ_WALL/2));
-  });
-  // the grate, a few millimetres down from the rim
-  const bars = 13, span = BBQ_LEN - 0.050;
-  for(let i=0;i<bars;i++){
-    const t = bars === 1 ? 0.5 : i/(bars-1);
-    part(new THREE.BoxGeometry(0.007, 0.005, BBQ_DEP - 0.034), steel,
-         -span/2 + t*span, yBox + BBQ_H - 0.048, zc);
+  function endPlate(w, h, t, x, y, z, host){
+    const m = part(chamferPlate(w, h, BBQ_CH, t), steel, x, y, z, host);
+    m.rotation.y = -Math.PI/2;               // profile into the z/y plane
+    return m;
   }
 
-  // side handles, a bar on two stubs off each end
+  // ---- stem: down the bore, then out over the water ----------------------
+  tube(0.180, 0.021, "y", steel, 0, -0.010, 0);
+  part(new THREE.BoxGeometry(0.046, 0.052, 0.046), black, 0, 0.105, 0);
+  tube(0.056, 0.011, "x", black, 0, 0.105, 0);      // the pivot bolt
+  const sy = Math.cos(STEM_ANG), sz = Math.sin(STEM_ANG);
+  const armY = 0.130 + sy*STEM_LEN, armZ = sz*STEM_LEN;
+  tube(STEM_LEN, 0.019, "y", steel, 0, 0.130 + sy*STEM_LEN/2, sz*STEM_LEN/2)
+    .rotation.x = STEM_ANG;
+  part(new THREE.BoxGeometry(0.044, 0.050, 0.044), black, 0, armY, armZ);
+  tube(0.054, 0.011, "x", black, 0, armY, armZ);    // and the second one
+
+  const yBox = armY + 0.055;                 // firebox floor
+  const zc = armZ + 0.012;                   // and its centre, over the water
+  const D2 = BBQ_DEP/2, L2 = BBQ_LEN/2, yMid = yBox + BBQ_H/2;
+
+  // yoke plates carrying the box off the knuckle
   [-1, 1].forEach(sd=>{
-    [-1, 1].forEach(t=>{
-      tube(0.062, 0.008, "x", steel, sd*(L2 + 0.031), yMid + 0.010, zc + t*0.105);
-    });
-    tube(0.210, 0.008, "z", steel, sd*(L2 + 0.062), yMid + 0.010, zc);
+    part(new THREE.BoxGeometry(0.009, 0.070, 0.048), steel,
+         sd*0.052, armY + 0.028, armZ);
   });
 
-  // lid, hinged on the outboard rim and swung back over centre
+  // ---- firebox -----------------------------------------------------------
+  part(new THREE.BoxGeometry(BBQ_LEN, 0.010, BBQ_DEP), steel, 0, yBox + 0.005, zc);
+  [-1, 1].forEach(sd=>{
+    endPlate(BBQ_DEP, BBQ_H, BBQ_WALL, sd*L2 + (sd<0 ? BBQ_WALL : 0), yBox, zc);
+    part(new THREE.BoxGeometry(BBQ_LEN, BBQ_H - BBQ_CH*0.5, BBQ_WALL), steel,
+         0, yBox + (BBQ_H - BBQ_CH*0.5)/2, zc + sd*(D2 - BBQ_WALL/2));
+  });
+  // the row of vents along the top of each side
+  for(let i=0;i<13;i++){
+    const x = -L2 + 0.055 + i*((BBQ_LEN - 0.110)/12);
+    [-1, 1].forEach(sd=>{
+      tube(0.014, 0.0055, "z", black, x, yBox + BBQ_H - 0.045, zc + sd*(D2 - 0.004));
+    });
+  }
+  // charcoal tray, in three perforated sections
+  [-1, 0, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(BBQ_LEN/3 - 0.010, 0.006, BBQ_DEP - 0.030), black,
+         sd*(BBQ_LEN/3), yBox + 0.055, zc);
+  });
+  // main grate, and the warming rack above and behind it
+  for(let i=0;i<17;i++){
+    part(new THREE.BoxGeometry(0.006, 0.005, BBQ_DEP - 0.034), steel,
+         -L2 + 0.030 + i*((BBQ_LEN - 0.060)/16), yBox + BBQ_H - 0.062, zc);
+  }
+  for(let i=0;i<15;i++){
+    part(new THREE.BoxGeometry(0.005, 0.004, BBQ_DEP*0.42), steel,
+         -L2 + 0.036 + i*((BBQ_LEN - 0.072)/14), yBox + BBQ_H - 0.014,
+         zc + D2 - BBQ_DEP*0.24);
+  }
+  part(new THREE.BoxGeometry(BBQ_LEN - 0.030, 0.005, 0.012), steel,
+       0, yBox + BBQ_H - 0.016, zc + D2 - BBQ_DEP*0.45);
+
+  // ---- side handles, a rail on two arms off each end ---------------------
+  [-1, 1].forEach(sd=>{
+    [-1, 1].forEach(t=>{
+      tube(0.085, 0.009, "x", steel, sd*(L2 + 0.042), yMid + 0.012, zc + t*0.115);
+    });
+    tube(0.230, 0.009, "z", steel, sd*(L2 + 0.085), yMid + 0.012, zc);
+  });
+
+  // ---- lid, hinged on the outboard rim and swung back over centre --------
   const lid = new THREE.Group();
   lid.position.set(0, yBox + BBQ_H, zc + D2);
   lid.rotation.x = BBQ_OPEN;
   g.add(lid);
-  part(new THREE.BoxGeometry(BBQ_LEN, 0.010, BBQ_DEP), steel,
-       0, 0.005, -D2, lid);
+  part(new THREE.BoxGeometry(BBQ_LEN, 0.008, BBQ_DEP), steel, 0, 0.004, -D2, lid);
   [-1, 1].forEach(sd=>{
-    part(new THREE.BoxGeometry(BBQ_WALL, BBQ_LID, BBQ_DEP), steel,
-         sd*(L2 - BBQ_WALL/2), BBQ_LID/2, -D2, lid);
+    const m = part(chamferPlate(BBQ_DEP, BBQ_LID, BBQ_CH, BBQ_WALL), steel,
+                   sd*L2 + (sd<0 ? BBQ_WALL : 0), 0, -D2, lid);
+    m.rotation.y = -Math.PI/2;
   });
-  part(new THREE.BoxGeometry(BBQ_LEN, BBQ_LID, BBQ_WALL), steel,
-       0, BBQ_LID/2, -BBQ_DEP + BBQ_WALL/2, lid);
-  // temperature gauge, and the handle across the free edge
-  tube(0.020, 0.030, "y", steel, 0, 0.012, -BBQ_DEP*0.42, lid);
-  tube(0.006, 0.022, "y", black, 0, 0.024, -BBQ_DEP*0.42, lid);
+  part(new THREE.BoxGeometry(BBQ_LEN, BBQ_LID - BBQ_CH*0.5, BBQ_WALL), steel,
+       0, (BBQ_LID - BBQ_CH*0.5)/2, -BBQ_DEP + BBQ_WALL/2, lid);
+  // gauge
+  tube(0.014, 0.032, "y", steel, 0, 0.007, -BBQ_DEP*0.40, lid);
+  tube(0.008, 0.024, "y", black, 0, 0.016, -BBQ_DEP*0.40, lid);
+  // handle, a squared loop standing off the lid
   [-1, 1].forEach(sd=>{
-    tube(0.055, 0.008, "y", steel, sd*0.105, 0.028, -BBQ_DEP*0.88, lid);
+    tube(0.062, 0.008, "y", steel, sd*0.110, 0.031, -BBQ_DEP*0.80, lid);
   });
-  tube(0.226, 0.009, "x", steel, 0, 0.053, -BBQ_DEP*0.88, lid);
+  tube(0.236, 0.010, "x", steel, 0, 0.062, -BBQ_DEP*0.80, lid);
 
   g.position.set(seat.x, seat.top, seat.z);
   if(seat.z < 0) g.rotation.y = Math.PI;     // turn local +Z outboard
