@@ -720,14 +720,18 @@ const BAIT_RISE = 0.215;      // underside of the tray above the holder rim
 const BAIT_DROP = 0.100;      // how far the post goes down the bore
 
 function buildBaitBoard(root){
-  // the aftmost rod holder on the port side, found rather than named
+  // The aftmost rod holder to port, found rather than named. Port is -z:
+  // the bow is +x and up is +y, so left-facing-forward is -z. Do NOT take
+  // this from the mesh names - the model builds Blender +y as "_S", and
+  // Blender +y exports to glTF -z, so everything named _S is in fact the
+  // port side and everything named _P is starboard.
   let seat = null;
   const bb = new THREE.Box3(), c = new THREE.Vector3();
   root.traverse(o=>{
     if(!o.isMesh || !/^RodHolder/.test(o.name)) return;
     o.updateWorldMatrix(true, false);
     bb.setFromObject(o); bb.getCenter(c);
-    if(c.z <= 0) return;                       // starboard side
+    if(c.z >= 0) return;                       // starboard side
     if(!seat || c.x < seat.x) seat = {x:c.x, z:c.z, top:bb.max.y};
   });
   if(!seat) return null;
@@ -749,24 +753,31 @@ function buildBaitBoard(root){
     m.castShadow = true; m.receiveShadow = true;
     g.add(m);
   }
-  const zIn  = seat.z - 0.045;              // just inboard of the rail
-  const zOut = zIn + BAIT_DEP;              // overhanging the water
+  const out  = seat.z < 0 ? -1 : 1;         // which way is overboard
+  const zIn  = seat.z - 0.045*out;          // just inboard of the rail
+  const zOut = zIn + BAIT_DEP*out;          // overhanging the water
   const zMid = (zIn + zOut) / 2;
   const yBase = seat.top + BAIT_RISE;       // underside of the tray
+  const yFence = yBase + BAIT_T + BAIT_FENCE/2;
 
   part(new THREE.BoxGeometry(BAIT_LEN, BAIT_T, BAIT_DEP), white,
        seat.x, yBase + BAIT_T/2, zMid);
-  // fence along the inboard edge and both ends; the outboard edge is left
-  // open, so anything swept off it goes over the side rather than inboard
-  part(new THREE.BoxGeometry(BAIT_LEN, BAIT_FENCE, BAIT_FT), white,
-       seat.x, yBase + BAIT_T + BAIT_FENCE/2, zIn + BAIT_FT/2);
+  // Fence round the outboard edge and both ends, open towards the boat -
+  // you work at it from the deck, and the fence is what stops the bait
+  // going over the side.
+  const gap = 0.150, run = (BAIT_LEN - gap)/2;
   [-1, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(run, BAIT_FENCE, BAIT_FT), white,
+         seat.x + sd*(gap + run)/2, yFence, zOut - (BAIT_FT/2)*out);
     part(new THREE.BoxGeometry(BAIT_FT, BAIT_FENCE, BAIT_DEP), white,
-         seat.x + sd*(BAIT_LEN/2 - BAIT_FT/2),
-         yBase + BAIT_T + BAIT_FENCE/2, zMid);
+         seat.x + sd*(BAIT_LEN/2 - BAIT_FT/2), yFence, zMid);
   });
+  // the bar over the hand slot in the middle of the back fence
+  part(new THREE.BoxGeometry(gap, 0.018, BAIT_FT), white,
+       seat.x, yBase + BAIT_T + BAIT_FENCE - 0.009, zOut - (BAIT_FT/2)*out);
+  // a lip under the open edge, so it reads as a tray and not a plank
   part(new THREE.BoxGeometry(BAIT_LEN, 0.030, BAIT_FT), white,
-       seat.x, yBase - 0.015, zOut - BAIT_FT/2);
+       seat.x, yBase - 0.015, zIn + (BAIT_FT/2)*out);
 
   const postLen = BAIT_RISE + BAIT_DROP;
   const post = new THREE.CylinderGeometry(0.020, 0.020, postLen, 20);
@@ -775,7 +786,7 @@ function buildBaitBoard(root){
        seat.x, yBase - 0.028, seat.z);
 
   g.visible = false;
-  console.log("[configurator] bait board on the rod holder at x " +
+  console.log("[configurator] bait board on the port rod holder at x " +
               seat.x.toFixed(2) + ", z " + seat.z.toFixed(2));
   return g;
 }
