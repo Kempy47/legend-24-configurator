@@ -584,44 +584,48 @@ const STITCH_DEF = "#EDEBE4";        // ivory thread on dark vinyl
 const backrestU = {
   uQOn:{value:0.0},
   uQStitch:{value:new THREE.Color(STITCH_DEF).convertSRGBToLinear()},
-  uQScale:{value:0.110},             // diamond width, metres
-  uQAspect:{value:1.35},             // taller than wide, the classic cut
-  uQBump:{value:0.050},              // puff height, as a fraction of uQScale
+  uQBump:{value:0.050},              // puff height, in diamond widths
   uQDash:{value:7.0},                // stitches per diagonal unit
+  uQSeam:{value:0.012},              // half the thread width, in diamonds
 };
 function makeQuilt(u){
   return (sh)=>{
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
       .replace("#include <common>",
-        "#include <common>\nattribute float aPanel;\nvarying vec3 vWPosQ;\n" +
-        "varying vec3 vWNormQ;\nvarying float vPanelQ;")
+        "#include <common>\nattribute vec3 aQuilt;\nvarying vec3 vWPosQ;\n" +
+        "varying vec3 vWNormQ;\nvarying vec3 vQuiltQ;")
       .replace("#include <begin_vertex>",
         "#include <begin_vertex>\nvWPosQ = (modelMatrix * vec4(position,1.0)).xyz;\n" +
-        "vWNormQ = normalize(mat3(modelMatrix) * normal);\nvPanelQ = aPanel;");
+        "vWNormQ = normalize(mat3(modelMatrix) * normal);\nvQuiltQ = aQuilt;");
     sh.fragmentShader = sh.fragmentShader
       .replace("#include <common>",
         "#include <common>\nvarying vec3 vWPosQ;\nvarying vec3 vWNormQ;\n" +
-        "varying float vPanelQ;\n" +
-        "uniform float uQOn;\nuniform vec3 uQStitch;\nuniform float uQScale;\n" +
-        "uniform float uQAspect;\nuniform float uQBump;\nuniform float uQDash;")
+        "varying vec3 vQuiltQ;\n" +
+        "uniform float uQOn;\nuniform vec3 uQStitch;\nuniform float uQDash;\n" +
+        "uniform float uQBump;\nuniform float uQSeam;")
       // colour_fragment runs before normal_fragment_begin, so the puff
       // gradient is worked out here and picked up again below
       .replace("#include <color_fragment>", [
         "#include <color_fragment>",
         "vec2 qGrad = vec2(0.0);",
         "vec3 qAx = vec3(0.0), qAy = vec3(0.0);",
-        "float qIn = uQOn > 0.5 ? smoothstep(1.0, 1.06, vPanelQ) : 0.0;",
-        "if(qIn > 0.001){",
-        "  vec3 qn = abs(normalize(vWNormQ));",
-        "  vec2 pp;",
-        "  if(qn.y >= max(qn.x, qn.z)){ pp = vWPosQ.xz;",
-        "    qAx = vec3(1.0,0.0,0.0); qAy = vec3(0.0,0.0,1.0); }",
-        "  else if(qn.x >= qn.z){      pp = vWPosQ.zy;",
-        "    qAx = vec3(0.0,0.0,1.0); qAy = vec3(0.0,1.0,0.0); }",
-        "  else {                      pp = vWPosQ.xy;",
-        "    qAx = vec3(1.0,0.0,0.0); qAy = vec3(0.0,1.0,0.0); }",
-        "  pp /= uQScale; pp.y /= uQAspect;",
+        "float qIn = 0.0;",
+        "if(uQOn > 0.5){",
+        // aQuilt.y is metres inside the border, so the border and the line of
+        // stitching that closes it are both a real width, not a screen one
+        "  float sEdge = vQuiltQ.y;",
+        "  qIn = smoothstep(0.0, 0.004, sEdge);",
+        // both axes are baked: along the strip in diamond widths, and up
+        // the panel scaled so a whole number of diamonds spans the gap
+        // between the two stitch lines
+        "  vec2 pp = vec2(vQuiltQ.z, vQuiltQ.x);",
+        // a tangent frame in the surface, for the puff, taking up as up
+        "  vec3 nw = normalize(vWNormQ);",
+        "  vec3 tg = cross(vec3(0.0,1.0,0.0), nw);",
+        "  float tl = length(tg);",
+        "  qAx = tl > 1e-4 ? tg/tl : vec3(1.0,0.0,0.0);",
+        "  qAy = normalize(cross(nw, qAx));",
         "  float qa = pp.x + pp.y, qb = pp.x - pp.y;",
         "  float sa = fract(qa) - 0.5, sb = fract(qb) - 0.5;",
         "  float da = abs(sa) * 0.7071, db = abs(sb) * 0.7071;",
@@ -636,10 +640,16 @@ function makeQuilt(u){
         "                  0.72, clamp(fwidth(pa) * 2.0, 0.0, 1.0));",
         "  float dsb = mix(1.0 - smoothstep(0.28, 0.40, abs(fract(pb) - 0.5)),",
         "                  0.72, clamp(fwidth(pb) * 2.0, 0.0, 1.0));",
-        "  float w = 0.012;",
-        "  float la = (1.0 - smoothstep(w - fw, w + fw, da)) * dsa;",
-        "  float lb = (1.0 - smoothstep(w - fw, w + fw, db)) * dsb;",
+        "  float la = (1.0 - smoothstep(uQSeam - fw, uQSeam + fw, da)) * dsa;",
+        "  float lb = (1.0 - smoothstep(uQSeam - fw, uQSeam + fw, db)) * dsb;",
         "  float st = clamp(max(la, lb), 0.0, 1.0) * qIn;",
+        // the line of stitching that closes the border, all the way round
+        "  float rw = fwidth(sEdge) * 0.5 + 0.0013;",
+        "  float pr = (vQuiltQ.z + vQuiltQ.x) * uQDash * 1.41;",
+        "  float dsr = mix(1.0 - smoothstep(0.28, 0.40, abs(fract(pr) - 0.5)),",
+        "                  0.72, clamp(fwidth(pr) * 2.0, 0.0, 1.0));",
+        "  float rim = (1.0 - smoothstep(rw*0.6, rw, abs(sEdge))) * dsr;",
+        "  st = max(st, clamp(rim, 0.0, 1.0));",
         "  diffuseColor.rgb = mix(diffuseColor.rgb * mix(1.0, qShade, qIn), uQStitch, st);",
         // h = cos(pi*sa)*cos(pi*sb): 1 at the middle of a diamond, 0 on the seam
         "  float ha = -3.14159 * sin(3.14159*sa) * cos(3.14159*sb);",
@@ -652,31 +662,41 @@ function makeQuilt(u){
         "  (qGrad.x * qAx + qGrad.y * qAy) * uQBump); }");
   };
 }
-/* ---- where the quilting is allowed to sit ----
-   3 in of plain fabric all round the panel, and none over the top cap.
 
-   These meshes carry no UVs, and their flat faces are only two vertices
-   tall, so there is nowhere to hold "how far is this point from the edge of
-   the panel": a value that is zero on both of the only two rows just
-   interpolates to zero the whole way across. So subdivide them and bake it.
+/* ---- the quilted panel, baked into the backrest meshes ----
+   The quilting sits in the middle of each backrest inside a plain border,
+   closed by a line of stitching, with the diamonds fitted so the top row's
+   points land on the top stitch line and the bottom row's on the bottom one.
 
-   The panel edge is read off the geometry itself. A seed is any vertex with
-   another vertex within 24 mm whose normal has turned 50-120 deg away - the
-   bevel round the top cap, the bottom, the tapered ends. The 120 deg
-   ceiling is what stops the face on the far side of the 70 mm slab, a full
-   180 deg away and closer than the border, from counting as an edge and
-   swallowing the panel whole.
+   That needs to know where THIS panel's edges are, and how far along and up
+   it a point sits. The meshes carry no UVs, and their flat faces are only
+   two vertices tall, so there is nowhere to keep it. So it is worked out
+   from the geometry on load and baked into a subdivided copy.
 
-   Baked normalised, so 1.0 is the inner edge of the border whatever the
-   panel: the side backrests are only a 211 mm face, where a full 3 in
-   border top and bottom would leave nothing in the middle, so they fall
-   back to the widest border that still leaves a quilted centre. */
-const QUILT_BORDER = 0.0762;   // 3 in
-const QUILT_SUB    = 4;        // lattice steps along a triangle edge
-const QUILT_REACH  = 0.150;    // deep enough - stop measuring past here
-const SEED_R       = 0.024;    // how far to look for the surface turning
-const SEED_COS_HI  = 0.643;    // cos 50 deg - a real turn, not quad twist
-const SEED_COS_LO  = -0.5;     // cos 120 deg - not the far side of the slab
+   Reading the edges off the surface normals was tried first and is not
+   reliable - on the console backrest it put the "bottom" edge at the top,
+   because a bevel that has curled over reports the same turn as a cap. So
+   the panel is measured instead:
+
+     along  a graph over the vertices' PLAN positions, walked from one end
+            to the other, gives arc length along the strip and so the
+            distance to each end. It follows a curved backrest round, which
+            projecting onto a world axis does not.
+     up     the highest and lowest surface at the same arc length are the
+            panel's top and bottom edge there, whatever the sheer is doing.
+
+   All three interpolate cleanly, so the two rows the flat face has carry
+   them exactly, and the fold down the middle of the border distance is
+   rebuilt by taking the min after interpolating rather than before. */
+const QUILT_BORDER  = 0.229;   // plain border, metres (9 in)
+const QUILT_DIAMOND = 0.110;   // diamond height aimed for, before fitting
+const QUILT_ASPECT  = 1.35;    // taller than wide, the classic cut
+const QUILT_MAXB    = 0.35;    // border may not eat more of the panel than this
+const QUILT_SUB     = 4;       // lattice steps along a triangle edge
+const GRAPH_R       = 0.250;   // plan-graph reach: must clear the panel's own
+                               // depth, or the walk goes down one face and
+                               // back along the other and doubles the length
+const STATION_W     = 0.040;   // arc-length window for "the top edge here"
 
 function bakePanelEdges(root){
   const t0 = performance.now();
@@ -685,15 +705,16 @@ function bakePanelEdges(root){
     if(!o.isMesh || !o.geometry) return;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     if(!mats.some(m=>m && m.name === "Backrests")) return;
-    try{ if(bakePanelEdge(o)) n++; }
+    try{ if(bakePanel(o)) n++; }
     catch(e){ console.warn("panel bake failed on", o.name, e); }
   });
   console.log("[configurator] quilt panels baked:", n,
               "in", Math.round(performance.now()-t0), "ms");
 }
 
-function bakePanelEdge(mesh){
-  const g = mesh.geometry, pos = g.attributes.position, nor = g.attributes.normal;
+function bakePanel(mesh){
+  const g = mesh.geometry, pos = g.attributes.position;
+  const nor = g.attributes.normal;
   if(!pos || !nor) return false;
   const n0 = pos.count;
   let idx = g.index && g.index.array;
@@ -701,98 +722,156 @@ function bakePanelEdge(mesh){
 
   mesh.updateWorldMatrix(true, false);
   const mw = mesh.matrixWorld;
-  const nmat = new THREE.Matrix3().getNormalMatrix(mw);
-  const wp = new Float32Array(n0*3), wn = new Float32Array(n0*3);
+  const wp = new Float32Array(n0*3);
   const v = new THREE.Vector3();
   for(let i=0;i<n0;i++){
     v.fromBufferAttribute(pos, i).applyMatrix4(mw);
     wp[i*3]=v.x; wp[i*3+1]=v.y; wp[i*3+2]=v.z;
-    v.fromBufferAttribute(nor, i).applyMatrix3(nmat).normalize();
-    wn[i*3]=v.x; wn[i*3+1]=v.y; wn[i*3+2]=v.z;
   }
 
-  const R2 = SEED_R*SEED_R, sx = [], sy = [], sz = [];
+  // --- arc length along the strip, from a graph over the plan positions ---
+  const R2 = GRAPH_R*GRAPH_R;
+  const nbr = new Array(n0), nbw = new Array(n0);
+  for(let i=0;i<n0;i++){ nbr[i] = []; nbw[i] = []; }
   for(let i=0;i<n0;i++){
-    const ax=wp[i*3], ay=wp[i*3+1], az=wp[i*3+2];
-    const nx=wn[i*3], ny=wn[i*3+1], nz=wn[i*3+2];
-    for(let j=0;j<n0;j++){
-      if(j === i) continue;
-      const dx=wp[j*3]-ax, dy=wp[j*3+1]-ay, dz=wp[j*3+2]-az;
-      if(dx*dx+dy*dy+dz*dz > R2) continue;
-      const d = nx*wn[j*3] + ny*wn[j*3+1] + nz*wn[j*3+2];
-      if(d < SEED_COS_HI && d > SEED_COS_LO){ sx.push(ax); sy.push(ay); sz.push(az); break; }
+    for(let j=i+1;j<n0;j++){
+      const dx = wp[j*3]-wp[i*3], dz = wp[j*3+2]-wp[i*3+2];
+      const d2 = dx*dx + dz*dz;
+      if(d2 > R2) continue;
+      const w = Math.sqrt(d2);
+      nbr[i].push(j); nbw[i].push(w);
+      nbr[j].push(i); nbw[j].push(w);
     }
   }
-  if(!sx.length) return false;        // no edge found: leave the mesh plain
-
-  // seeds bucketed on a coarse grid, so a lookup only sees what is near it
-  const CELL = 0.05, ns = sx.length;
-  let x0=Infinity, y0=Infinity, z0=Infinity, x1=-Infinity, y1=-Infinity, z1=-Infinity;
-  for(let i=0;i<ns;i++){
-    if(sx[i]<x0) x0=sx[i]; if(sx[i]>x1) x1=sx[i];
-    if(sy[i]<y0) y0=sy[i]; if(sy[i]>y1) y1=sy[i];
-    if(sz[i]<z0) z0=sz[i]; if(sz[i]>z1) z1=sz[i];
-  }
-  const gx = Math.ceil((x1-x0)/CELL)+1, gy = Math.ceil((y1-y0)/CELL)+1,
-        gz = Math.ceil((z1-z0)/CELL)+1;
-  const cellOf = (a, lo, m)=> Math.min(m-1, Math.max(0, Math.floor((a-lo)/CELL)));
-  const buckets = new Array(gx*gy*gz);
-  for(let i=0;i<ns;i++){
-    const k = (cellOf(sx[i],x0,gx)*gy + cellOf(sy[i],y0,gy))*gz + cellOf(sz[i],z0,gz);
-    (buckets[k] || (buckets[k] = [])).push(i);
-  }
-  const RMAX = Math.ceil(QUILT_REACH/CELL);
-  function edgeDist(px, py, pz){
-    const ci = cellOf(px,x0,gx), cj = cellOf(py,y0,gy), ck = cellOf(pz,z0,gz);
-    let best = QUILT_REACH*QUILT_REACH;
-    for(let r=0;r<=RMAX;r++){
-      const reached = (r-1)*CELL;
-      if(r > 0 && reached*reached > best) break;
-      for(let a=Math.max(0,ci-r); a<=Math.min(gx-1,ci+r); a++){
-        const ea = Math.abs(a-ci) === r;
-        for(let b=Math.max(0,cj-r); b<=Math.min(gy-1,cj+r); b++){
-          const eb = ea || Math.abs(b-cj) === r;
-          for(let c=Math.max(0,ck-r); c<=Math.min(gz-1,ck+r); c++){
-            if(r > 0 && !eb && Math.abs(c-ck) !== r) continue;   // shell only
-            const L = buckets[(a*gy+b)*gz+c];
-            if(!L) continue;
-            for(let q=0;q<L.length;q++){
-              const s = L[q];
-              const dx=sx[s]-px, dy=sy[s]-py, dz=sz[s]-pz;
-              const d2 = dx*dx + dy*dy + dz*dz;
-              if(d2 < best) best = d2;
-            }
-          }
-        }
+  const dist = new Float32Array(n0), done = new Uint8Array(n0);
+  function walk(src){
+    dist.fill(Infinity); done.fill(0); dist[src] = 0;
+    for(let k=0;k<n0;k++){
+      let b = -1, bd = Infinity;
+      for(let i=0;i<n0;i++) if(!done[i] && dist[i] < bd){ bd = dist[i]; b = i; }
+      if(b < 0) break;
+      done[b] = 1;
+      const L = nbr[b], W = nbw[b];
+      for(let q=0;q<L.length;q++){
+        const nd = bd + W[q];
+        if(nd < dist[L[q]]) dist[L[q]] = nd;
       }
     }
-    return Math.sqrt(best);
+    let far = src, fd = 0;
+    for(let i=0;i<n0;i++) if(dist[i] < Infinity && dist[i] > fd){ fd = dist[i]; far = i; }
+    return far;
   }
+  const endA = walk(0), endB = walk(endA);
+  const u = Float32Array.from(dist);          // arc length from one end
+  const len = u[endB];
+  if(!(len > 0.05)) return false;             // not a strip we can read
+  for(let i=0;i<n0;i++) if(!isFinite(u[i])) u[i] = 0;
+
+  // Measured straight off the graph, arc length also picks up how far ACROSS
+  // the strip a point is - and a backrest leans, so its top and bottom sit at
+  // different plan positions and the lattice comes out sheared. Fit a
+  // centreline down the middle of the strip and measure along that instead.
+  const NB = 32;
+  const sxs = new Float64Array(NB), szs = new Float64Array(NB), sns = new Float64Array(NB);
+  for(let i=0;i<n0;i++){
+    const t = Math.min(NB-1, Math.floor(u[i]/len*NB));
+    sxs[t] += wp[i*3]; szs[t] += wp[i*3+2]; sns[t]++;
+  }
+  const cx = [], cz = [];
+  for(let t=0;t<NB;t++) if(sns[t] > 0){ cx.push(sxs[t]/sns[t]); cz.push(szs[t]/sns[t]); }
+  if(cx.length < 3) return false;
+  // Each bin holds a slice of both faces of the slab, so its mean wobbles a
+  // few mm either way. Summed over the bins that alone added 60% to the
+  // length of the console backrest, so smooth the line before measuring it.
+  for(let pass=0; pass<6; pass++){
+    const ox = cx.slice(), oz = cz.slice();
+    for(let k=1;k+1<cx.length;k++){
+      cx[k] = (ox[k-1] + 2*ox[k] + ox[k+1]) * 0.25;
+      cz[k] = (oz[k-1] + 2*oz[k] + oz[k+1]) * 0.25;
+    }
+  }
+  const cum = [0];
+  for(let k=1;k<cx.length;k++)
+    cum.push(cum[k-1] + Math.hypot(cx[k]-cx[k-1], cz[k]-cz[k-1]));
+  const clen = cum[cum.length-1];
+  if(!(clen > 0.05)) return false;
+  for(let i=0;i<n0;i++){
+    const x = wp[i*3], z = wp[i*3+2];
+    let best = Infinity, at = 0;
+    for(let k=0;k+1<cx.length;k++){
+      const vx = cx[k+1]-cx[k], vz = cz[k+1]-cz[k], L2 = vx*vx + vz*vz;
+      let t = L2 > 1e-12 ? ((x-cx[k])*vx + (z-cz[k])*vz)/L2 : 0;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      const qx = cx[k]+vx*t, qz = cz[k]+vz*t;
+      const d2 = (x-qx)*(x-qx) + (z-qz)*(z-qz);
+      if(d2 < best){ best = d2; at = cum[k] + Math.sqrt(L2)*t; }
+    }
+    u[i] = at;
+  }
+  const dEnd = new Float32Array(n0);
+  for(let i=0;i<n0;i++) dEnd[i] = Math.min(u[i], clen - u[i]);
+
+  // --- the panel's top and bottom edge at each arc length ---
+  const order = Array.from({length:n0}, (_,i)=>i).sort((a,b)=>u[a]-u[b]);
+  const yT = new Float32Array(n0), yB = new Float32Array(n0);
+  for(let k=0, lo=0, hi=0; k<n0; k++){
+    const i = order[k], ui = u[i];
+    while(lo < n0 && u[order[lo]] < ui - STATION_W) lo++;
+    while(hi < n0 && u[order[hi]] <= ui + STATION_W) hi++;
+    let mn = Infinity, mx = -Infinity;
+    for(let q=lo;q<hi;q++){
+      const y = wp[order[q]*3+1];
+      if(y < mn) mn = y;
+      if(y > mx) mx = y;
+    }
+    yB[i] = mn; yT[i] = mx;
+  }
+
+  // --- border, and how many diamonds fit between the stitch lines ---
+  const hs = [];
+  for(let i=0;i<n0;i++) if(dEnd[i] > 0.05) hs.push(yT[i] - yB[i]);
+  hs.sort((a,b)=>a-b);
+  const H = hs.length ? hs[hs.length >> 1] : (yT[0] - yB[0]);
+  const B = Math.min(QUILT_BORDER, H*QUILT_MAXB);
+  const band = H - 2*B;
+  const rows = Math.max(1, Math.round(band / QUILT_DIAMOND));
+  const wide = (band / rows) / QUILT_ASPECT;
+  console.log("[configurator] " + mesh.name + ": panel " + Math.round(clen*1000) +
+    " x " + Math.round(H*1000) + " mm, border " + Math.round(B*1000) + " mm, " +
+    rows + " row(s) of " + Math.round(band/rows*1000) + " x " +
+    Math.round(wide*1000) + " mm");
 
   const N = QUILT_SUB, per = (N+1)*(N+2)/2, ntri = idx.length/3;
   const lat = [];
   for(let j=0, k=0; j<=N; j++){ lat.push([]); for(let i=0;i<=N-j;i++) lat[j].push(k++); }
   const outP = new Float32Array(ntri*per*3), outN = new Float32Array(ntri*per*3);
-  const outE = new Float32Array(ntri*per),   outI = new Uint32Array(ntri*N*N*3);
+  const outQ = new Float32Array(ntri*per*3), outI = new Uint32Array(ntri*N*N*3);
   const p0=new THREE.Vector3(), p1=new THREE.Vector3(), p2=new THREE.Vector3();
   const q0=new THREE.Vector3(), q1=new THREE.Vector3(), q2=new THREE.Vector3();
   const PP=new THREE.Vector3(), NN=new THREE.Vector3(), WW=new THREE.Vector3();
-  let vo = 0, io = 0, maxD = 0;
+  const invW = 1/wide;
+  let vo = 0, io = 0;
   for(let t=0;t<ntri;t++){
     const a=idx[t*3], b=idx[t*3+1], c=idx[t*3+2], base = vo;
     p0.fromBufferAttribute(pos,a); p1.fromBufferAttribute(pos,b); p2.fromBufferAttribute(pos,c);
     q0.fromBufferAttribute(nor,a); q1.fromBufferAttribute(nor,b); q2.fromBufferAttribute(nor,c);
     for(let j=0;j<=N;j++){
       for(let i=0;i<=N-j;i++){
-        const u = i/N, w = j/N, sxx = 1-u-w;
-        PP.set(p0.x*sxx+p1.x*u+p2.x*w, p0.y*sxx+p1.y*u+p2.y*w, p0.z*sxx+p1.z*u+p2.z*w);
-        NN.set(q0.x*sxx+q1.x*u+q2.x*w, q0.y*sxx+q1.y*u+q2.y*w, q0.z*sxx+q1.z*u+q2.z*w).normalize();
+        const uu = i/N, ww = j/N, sw = 1-uu-ww;
+        PP.set(p0.x*sw+p1.x*uu+p2.x*ww, p0.y*sw+p1.y*uu+p2.y*ww, p0.z*sw+p1.z*uu+p2.z*ww);
+        NN.set(q0.x*sw+q1.x*uu+q2.x*ww, q0.y*sw+q1.y*uu+q2.y*ww, q0.z*sw+q1.z*uu+q2.z*ww).normalize();
         outP[vo*3]=PP.x; outP[vo*3+1]=PP.y; outP[vo*3+2]=PP.z;
         outN[vo*3]=NN.x; outN[vo*3+1]=NN.y; outN[vo*3+2]=NN.z;
         WW.copy(PP).applyMatrix4(mw);
-        const d = edgeDist(WW.x, WW.y, WW.z);
-        outE[vo] = d;
-        if(d > maxD) maxD = d;
+        const top = yT[a]*sw + yT[b]*uu + yT[c]*ww;
+        const bot = yB[a]*sw + yB[b]*uu + yB[c]*ww;
+        const en  = dEnd[a]*sw + dEnd[b]*uu + dEnd[c]*ww;
+        const al  = u[a]*sw + u[b]*uu + u[c]*ww;
+        const hB = WW.y - bot, hT = top - WW.y;
+        const bandHere = Math.max(top - bot - 2*B, 1e-4);
+        outQ[vo*3]   = (hB - B) / bandHere * rows;      // 0 on the bottom stitch line
+        outQ[vo*3+1] = Math.min(hT, hB, en) - B;        // + inside the border
+        outQ[vo*3+2] = al * invW;                       // along the strip, in diamonds
         vo++;
       }
     }
@@ -806,16 +885,10 @@ function bakePanelEdge(mesh){
     }
   }
 
-  const border = Math.min(QUILT_BORDER, maxD*0.55);
-  const inv = border > 1e-4 ? 1/border : 0;
-  for(let i=0;i<vo;i++) outE[i] *= inv;
-  console.log("[configurator]", mesh.name, "panel depth",
-              Math.round(maxD*1000) + " mm, border " + Math.round(border*1000) + " mm");
-
   const ng = new THREE.BufferGeometry();
   ng.setAttribute("position", new THREE.BufferAttribute(outP, 3));
   ng.setAttribute("normal",   new THREE.BufferAttribute(outN, 3));
-  ng.setAttribute("aPanel",   new THREE.BufferAttribute(outE, 1));
+  ng.setAttribute("aQuilt",   new THREE.BufferAttribute(outQ, 3));
   ng.setIndex(new THREE.BufferAttribute(outI, 1));
   ng.computeBoundingBox(); ng.computeBoundingSphere();
   g.dispose();
