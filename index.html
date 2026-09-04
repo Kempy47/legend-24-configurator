@@ -307,6 +307,7 @@ const LABELS = {
   "InnerWalls":    ["deck", "Inner walls"],
   "Stainless":     ["deck", "Rails &amp; fittings"],
   "BaitBoard":     ["deck", "Bait board"],
+  "Bbq":           ["deck", "BBQ"],
   "EngineBlack":   ["eng",  "Engine cowls"],
   "EngineGrey":    ["eng",  "Engine lower unit"],
   "IntakeVent":    ["eng",  "Engine intake"],
@@ -318,7 +319,7 @@ const LABELS = {
 };
 const ORDER = ["__HULL_ALL__","__HULL_WHITE__","__HULL_NAVY__","Rubrail",
   "BiminiCanvas","Cushions","Backrests","__STITCH__","Bolsters","SeatVinyl","SeatBase",
-  "DeckNonskid","GunwaleTop","InnerWalls","ConsoleGel","Stainless","BaitBoard",
+  "DeckNonskid","GunwaleTop","InnerWalls","ConsoleGel","Stainless","BaitBoard","Bbq",
   "EngineBlack","EngineGrey","IntakeVent","DecalWhite",
   "Display","GaugeFace","MatteBlack","WheelGrip"];
 let PARTS = [];
@@ -338,6 +339,7 @@ const VIEWS = {
 let scene, camera, renderer, controls, root, box, sphere, groundPlane, studioEnv;
 let backrestsFitted = false, quiltBtn = null, setBackrests = null;
 let baitBoard = null, baitBtn = null;
+let bbq = null, bbqBtn = null;
 const matsByName = new Map();
 const groupObjs = new Map();
 const hullUniforms = {
@@ -450,6 +452,8 @@ function loadModel(){
     baitBoard = buildBaitBoard(root);
     if(baitBoard) root.add(baitBoard);       // before the box, so a view that
                                              // frames the boat frames it too
+    bbq = buildBbq(root);
+    if(bbq) root.add(bbq);
     prepareHullMaterial();
     buildParts();
     scene.add(root);
@@ -719,12 +723,12 @@ const BAIT_FENCE = 0.055, BAIT_FT = 0.012;
 const BAIT_RISE = 0.215;      // underside of the tray above the holder rim
 const BAIT_DROP = 0.100;      // how far the post goes down the bore
 
-function buildBaitBoard(root){
-  // The aftmost rod holder to port, found rather than named. Port is -z:
-  // the bow is +x and up is +y, so left-facing-forward is -z. Do NOT take
-  // this from the mesh names - the model builds Blender +y as "_S", and
-  // Blender +y exports to glTF -z, so everything named _S is in fact the
-  // port side and everything named _P is starboard.
+/* The aftmost rod holder to port, found rather than named. Port is -z: the
+   bow is +x and up is +y, so left-facing-forward is -z. Do NOT take this
+   from the mesh names - the model builds Blender +y as "_S", and Blender +y
+   exports to glTF -z, so everything named _S is in fact the port side and
+   everything named _P is starboard. */
+function aftPortHolder(root){
   let seat = null;
   const bb = new THREE.Box3(), c = new THREE.Vector3();
   root.traverse(o=>{
@@ -734,6 +738,11 @@ function buildBaitBoard(root){
     if(c.z >= 0) return;                       // starboard side
     if(!seat || c.x < seat.x) seat = {x:c.x, z:c.z, top:bb.max.y};
   });
+  return seat;
+}
+
+function buildBaitBoard(root){
+  const seat = aftPortHolder(root);
   if(!seat) return null;
 
   const white = new THREE.MeshStandardMaterial({
@@ -791,7 +800,123 @@ function buildBaitBoard(root){
   return g;
 }
 
+/* ---- rail BBQ, in the same aft port rod holder ----
+   Built in a local frame with +Z outboard and the origin on the holder rim,
+   then turned to face the right way. That keeps the lid hinge from having to
+   know which side of the boat it is on: it swings about local +X whichever
+   holder it lands in. Only one thing can be in a rod holder at a time, so
+   this and the bait board turn each other off. */
+const BBQ_LEN = 0.520, BBQ_DEP = 0.330, BBQ_H = 0.200;
+const BBQ_WALL = 0.010, BBQ_RISE = 0.245;   // firebox floor above the rim
+const BBQ_LID = 0.095, BBQ_OPEN = 1.83;     // lid depth, and 105 deg open
+
+function buildBbq(root){
+  const seat = aftPortHolder(root);
+  if(!seat) return null;
+
+  const steel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color("#B4B1A8").convertSRGBToLinear(),
+    roughness: 0.30, metalness: 0.55,
+  });
+  steel.name = "Bbq";
+  matsByName.set("Bbq", [steel]);
+  const black = (matsByName.get("EngineBlack") || [])[0] || steel;
+
+  const g = new THREE.Group();
+  g.name = "Bbq";
+  function part(geo, mat, x, y, z, host){
+    const m = new THREE.Mesh(geo, mat || steel);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    (host || g).add(m);
+    return m;
+  }
+  function tube(len, r, axis, mat, x, y, z, host){
+    const m = part(new THREE.CylinderGeometry(r, r, len, 14), mat, x, y, z, host);
+    if(axis === "x") m.rotation.z = Math.PI/2;
+    if(axis === "z") m.rotation.x = Math.PI/2;
+    return m;
+  }
+
+  const zc = 0.135;                      // hangs clear of the rail, as it must
+  const yBox = BBQ_RISE;                 // firebox floor
+  const yMid = yBox + BBQ_H/2;
+  const D2 = BBQ_DEP/2, L2 = BBQ_LEN/2;
+
+  // post into the bore, and the yoke it hangs the firebox from
+  tube(BBQ_RISE + 0.100 - 0.070, 0.020, "y", steel, 0, (BBQ_RISE - 0.070 - 0.100)/2, 0);
+  part(new THREE.BoxGeometry(0.050, 0.055, 0.050), black, 0, yBox - 0.045, 0);
+  [-1, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(0.010, 0.070, 0.050), steel,
+         sd*0.055, yBox - 0.035, 0);
+  });
+
+  // firebox: floor, two ends, two sides
+  part(new THREE.BoxGeometry(BBQ_LEN, 0.012, BBQ_DEP), steel, 0, yBox + 0.006, zc);
+  [-1, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(BBQ_WALL, BBQ_H, BBQ_DEP), steel,
+         sd*(L2 - BBQ_WALL/2), yMid, zc);
+    part(new THREE.BoxGeometry(BBQ_LEN, BBQ_H, BBQ_WALL), steel,
+         0, yMid, zc + sd*(D2 - BBQ_WALL/2));
+  });
+  // the grate, a few millimetres down from the rim
+  const bars = 13, span = BBQ_LEN - 0.050;
+  for(let i=0;i<bars;i++){
+    const t = bars === 1 ? 0.5 : i/(bars-1);
+    part(new THREE.BoxGeometry(0.007, 0.005, BBQ_DEP - 0.034), steel,
+         -span/2 + t*span, yBox + BBQ_H - 0.048, zc);
+  }
+
+  // side handles, a bar on two stubs off each end
+  [-1, 1].forEach(sd=>{
+    [-1, 1].forEach(t=>{
+      tube(0.062, 0.008, "x", steel, sd*(L2 + 0.031), yMid + 0.010, zc + t*0.105);
+    });
+    tube(0.210, 0.008, "z", steel, sd*(L2 + 0.062), yMid + 0.010, zc);
+  });
+
+  // lid, hinged on the outboard rim and swung back over centre
+  const lid = new THREE.Group();
+  lid.position.set(0, yBox + BBQ_H, zc + D2);
+  lid.rotation.x = BBQ_OPEN;
+  g.add(lid);
+  part(new THREE.BoxGeometry(BBQ_LEN, 0.010, BBQ_DEP), steel,
+       0, 0.005, -D2, lid);
+  [-1, 1].forEach(sd=>{
+    part(new THREE.BoxGeometry(BBQ_WALL, BBQ_LID, BBQ_DEP), steel,
+         sd*(L2 - BBQ_WALL/2), BBQ_LID/2, -D2, lid);
+  });
+  part(new THREE.BoxGeometry(BBQ_LEN, BBQ_LID, BBQ_WALL), steel,
+       0, BBQ_LID/2, -BBQ_DEP + BBQ_WALL/2, lid);
+  // temperature gauge, and the handle across the free edge
+  tube(0.020, 0.030, "y", steel, 0, 0.012, -BBQ_DEP*0.42, lid);
+  tube(0.006, 0.022, "y", black, 0, 0.024, -BBQ_DEP*0.42, lid);
+  [-1, 1].forEach(sd=>{
+    tube(0.055, 0.008, "y", steel, sd*0.105, 0.028, -BBQ_DEP*0.88, lid);
+  });
+  tube(0.226, 0.009, "x", steel, 0, 0.053, -BBQ_DEP*0.88, lid);
+
+  g.position.set(seat.x, seat.top, seat.z);
+  if(seat.z < 0) g.rotation.y = Math.PI;     // turn local +Z outboard
+  g.visible = false;
+  console.log("[configurator] bbq on the port rod holder at x " +
+              seat.x.toFixed(2) + ", z " + seat.z.toFixed(2));
+  return g;
+}
+
+function setBbq(on){
+  if(on && baitBoard && baitBoard.visible) setBait(false);   // one holder
+  if(bbq) bbq.visible = on;
+  if(bbqBtn) bbqBtn.setAttribute("aria-pressed", String(on));
+  const p = PARTS.find(x=>x.key === "Bbq");
+  if(p && p._wrap){
+    p._wrap.style.display = on ? "" : "none";
+    if(!on) p._wrap.classList.remove("open");
+  }
+}
+
 function setBait(on){
+  if(on && bbq && bbq.visible) setBbq(false);                // one holder
   if(baitBoard) baitBoard.visible = on;
   if(baitBtn) baitBtn.setAttribute("aria-pressed", String(on));
   const p = PARTS.find(x=>x.key === "BaitBoard");
@@ -1309,7 +1434,16 @@ function buildUI(){
   baitBtn.title = "610 \u00d7 320 mm preparation board, in the aft port rod holder";
   baitBtn.onclick = ()=>setBait(!(baitBoard && baitBoard.visible));
   dm.appendChild(baitBtn);
+
+  bbqBtn = document.createElement("button");
+  bbqBtn.type = "button"; bbqBtn.textContent = "BBQ";
+  bbqBtn.title = "Rail BBQ in the aft port rod holder \u2014 shares the holder "
+               + "with the bait board";
+  bbqBtn.onclick = ()=>setBbq(!(bbq && bbq.visible));
+  dm.appendChild(bbqBtn);
+
   setBait(false);
+  setBbq(false);
 
   // optional upholstery: its own add/remove buttons, next to its colours
   const ft = document.getElementById("fitted");
@@ -1423,6 +1557,7 @@ function buildUI(){
     });
     setQuilt(false);
     setBait(false);
+    setBbq(false);
     setView(148,16);
   };
 
@@ -1623,6 +1758,8 @@ async function exportPDF(btn){
    ["SeaDek wall tops", wallU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["Bait board", baitBoard && baitBoard.visible
        ? "610 \u00d7 320 mm, aft port rod holder" : "Not fitted"],
+   ["BBQ", bbq && bbq.visible
+       ? "520 \u00d7 330 mm, aft port rod holder" : "Not fitted"],
    ["Backrests", !backrestsFitted ? "Not fitted"
        : (backrestU.uQOn.value>0.5
            ? "Diamond quilted centre, plain border, contrast stitch" : "Plain")],
