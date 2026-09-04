@@ -703,9 +703,6 @@ const QUILT_MAXB    = 0.155;   // ...but never more than this much of a short
                                // panel's height, which is what sets the
                                // border on the 214 mm side backrests
 const QUILT_SUB     = 4;       // lattice steps along a triangle edge
-const GRAPH_R       = 0.250;   // plan-graph reach: must clear the panel's own
-                               // depth, or the walk goes down one face and
-                               // back along the other and doubles the length
 
 function bakePanelEdges(root){
   const t0 = performance.now();
@@ -724,7 +721,7 @@ function bakePanelEdges(root){
 /* The extreme of `val` over bands of `key`, smoothed, read back per vertex.
    Used for both "how high is the panel here" and "how far along does it
    reach at this height" - the same operation with the axes swapped. */
-function edgeProfile(key, val, wantMax, n0, out){
+function edgeProfile(key, val, wantMax, passes, n0, out){
   const NB = 24;
   let lo = Infinity, hi = -Infinity;
   for(let i=0;i<n0;i++){ if(key[i]<lo) lo=key[i]; if(key[i]>hi) hi=key[i]; }
@@ -737,7 +734,7 @@ function edgeProfile(key, val, wantMax, n0, out){
   }
   for(let b=1;b<NB;b++)    if(!isFinite(acc[b])) acc[b] = acc[b-1];
   for(let b=NB-2;b>=0;b--) if(!isFinite(acc[b])) acc[b] = acc[b+1];
-  for(let pass=0;pass<4;pass++){
+  for(let pass=0;pass<passes;pass++){
     const t = acc.slice();
     for(let b=1;b<NB-1;b++) acc[b] = (t[b-1] + 2*t[b] + t[b+1]) * 0.25;
   }
@@ -767,100 +764,37 @@ function bakePanel(mesh){
     wp[i*3]=v.x; wp[i*3+1]=v.y; wp[i*3+2]=v.z;
   }
 
-  // --- arc length along the strip, from a graph over the plan positions ---
-  const R2 = GRAPH_R*GRAPH_R;
-  const nbr = new Array(n0), nbw = new Array(n0);
-  for(let i=0;i<n0;i++){ nbr[i] = []; nbw[i] = []; }
+  // --- along the panel ------------------------------------------------
+  // The straight horizontal axis the panel mostly lies along, taken from the
+  // principal direction of its plan positions.
+  //
+  // A fitted centreline was tried first and is worse. These plans are only
+  // three or four times longer than they are deep, so the bands it averages
+  // are wide, the line comes out skewed, and the arc length along it runs
+  // between 0 and 2.3 times the real distance - which is what was pulling
+  // the diamonds out of shape along the bottom of the console backrest.
+  // The real panels are near enough straight (the bow backrest bends about
+  // 10 deg end to end), so a straight axis is uniform by construction: it
+  // measures 0.95-1.00 of true distance on all five, against 0.00-2.28 for
+  // the fitted line.
+  let mx = 0, mz = 0;
+  for(let i=0;i<n0;i++){ mx += wp[i*3]; mz += wp[i*3+2]; }
+  mx /= n0; mz /= n0;
+  let cxx = 0, cxz = 0, czz = 0;
   for(let i=0;i<n0;i++){
-    for(let j=i+1;j<n0;j++){
-      const dx = wp[j*3]-wp[i*3], dz = wp[j*3+2]-wp[i*3+2];
-      const d2 = dx*dx + dz*dz;
-      if(d2 > R2) continue;
-      const w = Math.sqrt(d2);
-      nbr[i].push(j); nbw[i].push(w);
-      nbr[j].push(i); nbw[j].push(w);
-    }
+    const dx = wp[i*3]-mx, dz = wp[i*3+2]-mz;
+    cxx += dx*dx; cxz += dx*dz; czz += dz*dz;
   }
-  const dist = new Float32Array(n0), done = new Uint8Array(n0);
-  function walk(src){
-    dist.fill(Infinity); done.fill(0); dist[src] = 0;
-    for(let k=0;k<n0;k++){
-      let b = -1, bd = Infinity;
-      for(let i=0;i<n0;i++) if(!done[i] && dist[i] < bd){ bd = dist[i]; b = i; }
-      if(b < 0) break;
-      done[b] = 1;
-      const L = nbr[b], W = nbw[b];
-      for(let q=0;q<L.length;q++){
-        const nd = bd + W[q];
-        if(nd < dist[L[q]]) dist[L[q]] = nd;
-      }
-    }
-    let far = src, fd = 0;
-    for(let i=0;i<n0;i++) if(dist[i] < Infinity && dist[i] > fd){ fd = dist[i]; far = i; }
-    return far;
-  }
-  const endA = walk(0), endB = walk(endA);
-  const u = Float32Array.from(dist);          // arc length from one end
-  const len = u[endB];
-  if(!(len > 0.05)) return false;             // not a strip we can read
-  for(let i=0;i<n0;i++) if(!isFinite(u[i])) u[i] = 0;
-
-  // Measured straight off the graph, arc length also picks up how far ACROSS
-  // the strip a point is - and a backrest leans, so its top and bottom sit at
-  // different plan positions and the lattice comes out sheared. Fit a
-  // centreline down the middle of the strip and measure along that instead.
-  const NB = 32;
-  const sxs = new Float64Array(NB), szs = new Float64Array(NB), sns = new Float64Array(NB);
-  for(let i=0;i<n0;i++){
-    const t = Math.min(NB-1, Math.floor(u[i]/len*NB));
-    sxs[t] += wp[i*3]; szs[t] += wp[i*3+2]; sns[t]++;
-  }
-  const cx = [], cz = [];
-  for(let t=0;t<NB;t++) if(sns[t] > 0){ cx.push(sxs[t]/sns[t]); cz.push(szs[t]/sns[t]); }
-  if(cx.length < 3) return false;
-  // Each bin holds a slice of both faces of the slab, so its mean wobbles a
-  // few mm either way. Summed over the bins that alone added 60% to the
-  // length of the console backrest, so smooth the line before measuring it.
-  for(let pass=0; pass<6; pass++){
-    const ox = cx.slice(), oz = cz.slice();
-    for(let k=1;k+1<cx.length;k++){
-      cx[k] = (ox[k-1] + 2*ox[k] + ox[k+1]) * 0.25;
-      cz[k] = (oz[k-1] + 2*oz[k] + oz[k+1]) * 0.25;
-    }
-  }
-  // Run the line out past both ends. A bin mean sits inside the extreme
-  // vertices it averages, so without this the widest corners project off the
-  // end of the line, clamp to it, and share one arc length.
-  {
-    const ex = 0.40;
-    let dx = cx[0]-cx[1], dz = cz[0]-cz[1];
-    let m = Math.hypot(dx, dz) || 1;
-    cx.unshift(cx[0] + dx/m*ex); cz.unshift(cz[0] + dz/m*ex);
-    const n = cx.length;
-    dx = cx[n-1]-cx[n-2]; dz = cz[n-1]-cz[n-2];
-    m = Math.hypot(dx, dz) || 1;
-    cx.push(cx[n-1] + dx/m*ex); cz.push(cz[n-1] + dz/m*ex);
-  }
-  const cum = [0];
-  for(let k=1;k<cx.length;k++)
-    cum.push(cum[k-1] + Math.hypot(cx[k]-cx[k-1], cz[k]-cz[k-1]));
-  if(!(cum[cum.length-1] > 0.05)) return false;
-  for(let i=0;i<n0;i++){
-    const x = wp[i*3], z = wp[i*3+2];
-    let best = Infinity, at = 0;
-    for(let k=0;k+1<cx.length;k++){
-      const vx = cx[k+1]-cx[k], vz = cz[k+1]-cz[k], L2 = vx*vx + vz*vz;
-      let t = L2 > 1e-12 ? ((x-cx[k])*vx + (z-cz[k])*vz)/L2 : 0;
-      t = t < 0 ? 0 : (t > 1 ? 1 : t);
-      const qx = cx[k]+vx*t, qz = cz[k]+vz*t;
-      const d2 = (x-qx)*(x-qx) + (z-qz)*(z-qz);
-      if(d2 < best){ best = d2; at = cum[k] + Math.sqrt(L2)*t; }
-    }
-    u[i] = at;
-  }
-  // re-zero on the panel itself, now that the line overhangs it
+  const th = 0.5 * Math.atan2(2*cxz, cxx - czz);
+  const ax = Math.cos(th), az = Math.sin(th);
+  const u = new Float32Array(n0);
   let u0 = Infinity, u1 = -Infinity;
-  for(let i=0;i<n0;i++){ if(u[i]<u0) u0=u[i]; if(u[i]>u1) u1=u[i]; }
+  for(let i=0;i<n0;i++){
+    const p = (wp[i*3]-mx)*ax + (wp[i*3+2]-mz)*az;
+    u[i] = p;
+    if(p < u0) u0 = p;
+    if(p > u1) u1 = p;
+  }
   for(let i=0;i<n0;i++) u[i] -= u0;
   const clen = u1 - u0;
   if(!(clen > 0.05)) return false;
@@ -879,10 +813,18 @@ function bakePanel(mesh){
   for(let i=0;i<n0;i++) wy[i] = wp[i*3+1];
   const yT = new Float32Array(n0), yB = new Float32Array(n0);
   const uL = new Float32Array(n0), uR = new Float32Array(n0);
-  edgeProfile(u,  wy, true,  n0, yT);
-  edgeProfile(u,  wy, false, n0, yB);
-  edgeProfile(wy, u,  true,  n0, uR);
-  edgeProfile(wy, u,  false, n0, uL);
+  edgeProfile(u,  wy, true,  4, n0, yT);
+  edgeProfile(u,  wy, false, 4, n0, yB);
+  edgeProfile(wy, u,  true,  4, n0, uR);
+  edgeProfile(wy, u,  false, 4, n0, uL);
+
+  // The rows sit parallel to the bottom edge, which is right along a bench
+  // that rises with the sheer - but this panel's bottom edge sweeps up hard
+  // at both corners, and following THAT shears the diamonds into skewed
+  // scraps. So the lattice runs off its own, far smoother, reading of the
+  // bottom: the border still hugs the real edge, the rows stay regular.
+  const yLat = new Float32Array(n0);
+  edgeProfile(u, wy, false, 30, n0, yLat);
 
   // --- border, and how many diamonds fit between the stitch lines ---
   const hs = [];
@@ -927,6 +869,7 @@ function bakePanel(mesh){
         WW.copy(PP).applyMatrix4(mw);
         const top = yT[a]*sw + yT[b]*uu + yT[c]*ww;
         const bot = yB[a]*sw + yB[b]*uu + yB[c]*ww;
+        const blt = yLat[a]*sw + yLat[b]*uu + yLat[c]*ww;
         const al  = u[a]*sw + u[b]*uu + u[c]*ww;
         const lu  = uL[a]*sw + uL[b]*uu + uL[c]*ww;
         const ru  = uR[a]*sw + uR[b]*uu + uR[c]*ww;
@@ -938,7 +881,7 @@ function bakePanel(mesh){
         // bowed them out towards the corners. Only the offset follows the
         // panel, so the rows stay parallel to its bottom edge and rise with
         // the sheer along a bench without bending.
-        outQ[vo*3]   = (hB - B) / band * rows;          // 0 on the bottom stitch line
+        outQ[vo*3]   = (WW.y - blt - B) / band * rows;  // 0 on the bottom stitch line
         outQ[vo*3+1] = Math.min(hT, hB, en) - B;        // + inside the border
         outQ[vo*3+2] = al * invW;                       // along the strip, in diamonds
         vo++;
