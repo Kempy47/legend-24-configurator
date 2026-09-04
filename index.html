@@ -229,6 +229,7 @@ input[type=color]{
 
     <h2>Canvas &amp; upholstery</h2>
     <div class="toggles" id="fitted" style="margin-bottom:12px"></div>
+    <div class="toggles" id="quilt" style="margin-bottom:12px"></div>
     <div id="grp-soft"></div>
 
     <h2>Deck &amp; fittings</h2>
@@ -296,6 +297,7 @@ const LABELS = {
   "BiminiCanvas":  ["soft", "Bimini canvas"],
   "Cushions":      ["soft", "Seat cushions"],
   "Backrests":     ["soft", "Backrests"],
+  "__STITCH__":    ["soft", "Quilting stitch"],
   "Bolsters":      ["soft", "Bolster cushions"],
   "SeatVinyl":     ["soft", "Helm seat vinyl"],
   "SeatBase":      ["soft", "Seat bases"],
@@ -314,7 +316,7 @@ const LABELS = {
   "WheelGrip":     ["helm", "Steering wheel"],
 };
 const ORDER = ["__HULL_ALL__","__HULL_WHITE__","__HULL_NAVY__","Rubrail",
-  "BiminiCanvas","Cushions","Backrests","Bolsters","SeatVinyl","SeatBase",
+  "BiminiCanvas","Cushions","Backrests","__STITCH__","Bolsters","SeatVinyl","SeatBase",
   "DeckNonskid","GunwaleTop","InnerWalls","ConsoleGel","Stainless",
   "EngineBlack","EngineGrey","IntakeVent","DecalWhite",
   "Display","GaugeFace","MatteBlack","WheelGrip"];
@@ -333,6 +335,7 @@ const VIEWS = {
 };
 
 let scene, camera, renderer, controls, root, box, sphere, groundPlane, studioEnv;
+let backrestsFitted = false, quiltBtn = null;
 const matsByName = new Map();
 const groupObjs = new Map();
 const hullUniforms = {
@@ -481,6 +484,7 @@ function buildParts(){
     let def = "#E0DED6";
     if(key === "__HULL_WHITE__" || key === "__HULL_ALL__") def = "#EDEBE4";
     else if(key === "__HULL_NAVY__") def = "#16305A";
+    else if(key === "__STITCH__") def = STITCH_DEF;
     else {
       const inst = matsByName.get(key);
       const c = inst[0].color.clone().convertLinearToSRGB();
@@ -517,6 +521,7 @@ function prepareHullMaterial(){
   m.needsUpdate = true;
   });
   prepareDeckMaterial();
+  prepareBackrestMaterial();
 }
 
 /* SeaDek: a diamond-groove pattern drawn procedurally from world position.
@@ -566,6 +571,88 @@ function newSeadekUniforms(base){
 }
 const deckU = newSeadekUniforms("#D9D7D1");
 const wallU = newSeadekUniforms("#EDEBE4");
+
+/* Diamond quilting for the backrests. Two families of seams - the lines
+   x+y = n+0.5 and x-y = n+0.5 - cut the surface into diamonds; the panels
+   between them are puffed by perturbing the normal from a cos/cos height
+   field, and the contrast thread is drawn as a dashed line along each seam.
+   Projected triplanar from world position like the SeaDek, because the
+   generated backrest meshes carry no UVs; on a near-vertical panel that
+   lands on the x/y or z/y plane, so the diamonds stand upright. */
+const STITCH_DEF = "#EDEBE4";        // ivory thread on dark vinyl
+const backrestU = {
+  uQOn:{value:0.0},
+  uQStitch:{value:new THREE.Color(STITCH_DEF).convertSRGBToLinear()},
+  uQScale:{value:0.110},             // diamond width, metres
+  uQAspect:{value:1.35},             // taller than wide, the classic cut
+  uQBump:{value:0.050},              // puff height, as a fraction of uQScale
+  uQDash:{value:7.0},                // stitches per diagonal unit
+};
+function makeQuilt(u){
+  return (sh)=>{
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>",
+        "#include <common>\nvarying vec3 vWPosQ;\nvarying vec3 vWNormQ;")
+      .replace("#include <begin_vertex>",
+        "#include <begin_vertex>\nvWPosQ = (modelMatrix * vec4(position,1.0)).xyz;\n" +
+        "vWNormQ = normalize(mat3(modelMatrix) * normal);");
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>",
+        "#include <common>\nvarying vec3 vWPosQ;\nvarying vec3 vWNormQ;\n" +
+        "uniform float uQOn;\nuniform vec3 uQStitch;\nuniform float uQScale;\n" +
+        "uniform float uQAspect;\nuniform float uQBump;\nuniform float uQDash;")
+      // colour_fragment runs before normal_fragment_begin, so the puff
+      // gradient is worked out here and picked up again below
+      .replace("#include <color_fragment>", [
+        "#include <color_fragment>",
+        "vec2 qGrad = vec2(0.0);",
+        "vec3 qAx = vec3(0.0), qAy = vec3(0.0);",
+        "if(uQOn > 0.5){",
+        "  vec3 qn = abs(normalize(vWNormQ));",
+        "  vec2 pp;",
+        "  if(qn.y >= max(qn.x, qn.z)){ pp = vWPosQ.xz;",
+        "    qAx = vec3(1.0,0.0,0.0); qAy = vec3(0.0,0.0,1.0); }",
+        "  else if(qn.x >= qn.z){      pp = vWPosQ.zy;",
+        "    qAx = vec3(0.0,0.0,1.0); qAy = vec3(0.0,1.0,0.0); }",
+        "  else {                      pp = vWPosQ.xy;",
+        "    qAx = vec3(1.0,0.0,0.0); qAy = vec3(0.0,1.0,0.0); }",
+        "  pp /= uQScale; pp.y /= uQAspect;",
+        "  float qa = pp.x + pp.y, qb = pp.x - pp.y;",
+        "  float sa = fract(qa) - 0.5, sb = fract(qb) - 0.5;",
+        "  float da = abs(sa) * 0.7071, db = abs(sb) * 0.7071;",
+        "  float seam = min(da, db);",
+        "  float fw = max(fwidth(seam), 0.0015);",
+        // the crease pulls the vinyl in and takes the light with it
+        "  float qShade = mix(0.72, 1.04, smoothstep(0.0, 0.15, seam));",
+        // dashed thread; once a dash is smaller than a pixel it is replaced
+        // by its own average, or it moires across the far side of the boat
+        "  float pa = qb * uQDash, pb = qa * uQDash;",
+        "  float dsa = mix(1.0 - smoothstep(0.28, 0.40, abs(fract(pa) - 0.5)),",
+        "                  0.72, clamp(fwidth(pa) * 2.0, 0.0, 1.0));",
+        "  float dsb = mix(1.0 - smoothstep(0.28, 0.40, abs(fract(pb) - 0.5)),",
+        "                  0.72, clamp(fwidth(pb) * 2.0, 0.0, 1.0));",
+        "  float w = 0.012;",
+        "  float la = (1.0 - smoothstep(w - fw, w + fw, da)) * dsa;",
+        "  float lb = (1.0 - smoothstep(w - fw, w + fw, db)) * dsb;",
+        "  float st = clamp(max(la, lb), 0.0, 1.0);",
+        "  diffuseColor.rgb = mix(diffuseColor.rgb * qShade, uQStitch, st);",
+        // h = cos(pi*sa)*cos(pi*sb): 1 at the middle of a diamond, 0 on the seam
+        "  float ha = -3.14159 * sin(3.14159*sa) * cos(3.14159*sb);",
+        "  float hb = -3.14159 * cos(3.14159*sa) * sin(3.14159*sb);",
+        "  qGrad = vec2(ha + hb, ha - hb);",
+        "}"].join("\n"))
+      .replace("#include <normal_fragment_begin>",
+        "#include <normal_fragment_begin>\n" +
+        "if(uQOn > 0.5){ normal = normalize(normal -\n" +
+        "  (qGrad.x * qAx + qGrad.y * qAy) * uQBump); }");
+  };
+}
+function prepareBackrestMaterial(){
+  (matsByName.get("Backrests") || []).forEach(m=>{
+    m.onBeforeCompile = makeQuilt(backrestU); m.needsUpdate = true;
+  });
+}
 
 function prepareDeckMaterial(){
   (matsByName.get("DeckNonskid") || []).forEach(m=>{
@@ -708,7 +795,26 @@ function setColor(key, hex){
   if(key === "__HULL_NAVY__"){  hullUniforms.uNavy.value.set(hex).convertSRGBToLinear();  return; }
   if(key === "DeckNonskid"){ deckU.uBase.value.set(hex).convertSRGBToLinear(); return; }
   if(key === "GunwaleTop"){ wallU.uBase.value.set(hex).convertSRGBToLinear(); return; }
+  if(key === "__STITCH__"){ backrestU.uQStitch.value.set(hex).convertSRGBToLinear(); return; }
   (matsByName.get(key) || []).forEach(m=>m.color.set(hex).convertSRGBToLinear());
+}
+
+/* The quilting toggle is only meaningful with backrests fitted, and the
+   stitch colour is only meaningful with the quilting on. */
+function setQuilt(on){
+  backrestU.uQOn.value = on ? 1.0 : 0.0;
+  syncQuilt();
+}
+function syncQuilt(){
+  const q = document.getElementById("quilt");
+  if(q) q.style.display = backrestsFitted ? "" : "none";
+  const on = backrestsFitted && backrestU.uQOn.value > 0.5;
+  if(quiltBtn) quiltBtn.setAttribute("aria-pressed", String(backrestU.uQOn.value > 0.5));
+  const p = PARTS.find(x=>x.key === "__STITCH__");
+  if(p && p._wrap){
+    p._wrap.style.display = on ? "" : "none";
+    if(!on) p._wrap.classList.remove("open");
+  }
 }
 
 function syncChip(key, hex){
@@ -854,11 +960,20 @@ function buildUI(){
       const key = grp === "backrests" ? "Backrests" : "Bolsters";
       const p = PARTS.find(x=>x.key===key);
       if(p && p._wrap) p._wrap.style.display = on ? "" : "none";
+      if(grp === "backrests"){ backrestsFitted = on; syncQuilt(); }
     };
     b.onclick = ()=>{ on = !on; apply(); };
     ft.appendChild(b);
     apply();
   });
+
+  // diamond quilting is a backrest option, so it only shows with them fitted
+  quiltBtn = document.createElement("button");
+  quiltBtn.type = "button"; quiltBtn.textContent = "Diamond quilting";
+  quiltBtn.title = "Diamond-quilted backrests with contrast stitching";
+  quiltBtn.onclick = ()=>setQuilt(backrestU.uQOn.value < 0.5);
+  document.getElementById("quilt").appendChild(quiltBtn);
+  setQuilt(false);
 
   const sh = document.getElementById("sheet");
   document.getElementById("sheetclose").onclick = ()=>{ sh.dataset.open = "false"; };
@@ -935,7 +1050,9 @@ function buildUI(){
       b.setAttribute("aria-pressed", String(on));
       const p = PARTS.find(x=>x.key===(i===0?"Backrests":"Bolsters"));
       if(p && p._wrap) p._wrap.style.display = on ? "" : "none";
+      if(i === 0) backrestsFitted = on;
     });
+    setQuilt(false);
     setView(148,16);
   };
 
@@ -1134,6 +1251,8 @@ async function exportPDF(btn){
    ["Engines","2 \u00d7 Suzuki 115 hp"],["Built","Mauritius, 2004"],
    ["SeaDek floor", deckU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["SeaDek wall tops", wallU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
+   ["Backrests", !backrestsFitted ? "Not fitted"
+       : (backrestU.uQOn.value>0.5 ? "Diamond quilted, contrast stitch" : "Plain")],
   ].forEach(([k,v])=>{ doc.text(k, M+5, y); doc.text(v, M+75, y); y += 6; });
   y += 4; doc.setTextColor(20); doc.text("Colours", M+5, y); y += 6;
   doc.setTextColor(70);
