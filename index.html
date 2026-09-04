@@ -335,7 +335,7 @@ const VIEWS = {
 };
 
 let scene, camera, renderer, controls, root, box, sphere, groundPlane, studioEnv;
-let backrestsFitted = false, quiltBtn = null;
+let backrestsFitted = false, quiltBtn = null, setBackrests = null;
 const matsByName = new Map();
 const groupObjs = new Map();
 const hullUniforms = {
@@ -799,17 +799,17 @@ function setColor(key, hex){
   (matsByName.get(key) || []).forEach(m=>m.color.set(hex).convertSRGBToLinear());
 }
 
-/* The quilting toggle is only meaningful with backrests fitted, and the
-   stitch colour is only meaningful with the quilting on. */
+/* Quilting is a property of the backrests, so asking for it fits them -
+   hiding the control until they were on just made it impossible to find.
+   The stitch colour follows the quilting in and out. */
 function setQuilt(on){
+  if(on && !backrestsFitted && setBackrests) setBackrests(true);
   backrestU.uQOn.value = on ? 1.0 : 0.0;
   syncQuilt();
 }
 function syncQuilt(){
-  const q = document.getElementById("quilt");
-  if(q) q.style.display = backrestsFitted ? "" : "none";
-  const on = backrestsFitted && backrestU.uQOn.value > 0.5;
-  if(quiltBtn) quiltBtn.setAttribute("aria-pressed", String(backrestU.uQOn.value > 0.5));
+  const on = backrestU.uQOn.value > 0.5;
+  if(quiltBtn) quiltBtn.setAttribute("aria-pressed", String(on));
   const p = PARTS.find(x=>x.key === "__STITCH__");
   if(p && p._wrap){
     p._wrap.style.display = on ? "" : "none";
@@ -960,17 +960,22 @@ function buildUI(){
       const key = grp === "backrests" ? "Backrests" : "Bolsters";
       const p = PARTS.find(x=>x.key===key);
       if(p && p._wrap) p._wrap.style.display = on ? "" : "none";
-      if(grp === "backrests"){ backrestsFitted = on; syncQuilt(); }
+      if(grp === "backrests"){
+        backrestsFitted = on;
+        if(!on) backrestU.uQOn.value = 0.0;   // nothing left to quilt
+        syncQuilt();
+      }
     };
     b.onclick = ()=>{ on = !on; apply(); };
     ft.appendChild(b);
     apply();
+    if(grp === "backrests") setBackrests = (v)=>{ on = v; apply(); };
   });
 
-  // diamond quilting is a backrest option, so it only shows with them fitted
   quiltBtn = document.createElement("button");
-  quiltBtn.type = "button"; quiltBtn.textContent = "Diamond quilting";
-  quiltBtn.title = "Diamond-quilted backrests with contrast stitching";
+  quiltBtn.type = "button"; quiltBtn.textContent = "Diamond-quilted backrests";
+  quiltBtn.title = "Diamond quilting with a contrast stitch \u2014 turning it " +
+                   "on fits the backrests and adds a stitch colour below";
   quiltBtn.onclick = ()=>setQuilt(backrestU.uQOn.value < 0.5);
   document.getElementById("quilt").appendChild(quiltBtn);
   setQuilt(false);
