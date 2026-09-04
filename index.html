@@ -444,6 +444,7 @@ function loadModel(){
         }
       });
     });
+    bakePanelEdges(root);
     prepareHullMaterial();
     buildParts();
     scene.add(root);
@@ -593,13 +594,15 @@ function makeQuilt(u){
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
       .replace("#include <common>",
-        "#include <common>\nvarying vec3 vWPosQ;\nvarying vec3 vWNormQ;")
+        "#include <common>\nattribute float aPanel;\nvarying vec3 vWPosQ;\n" +
+        "varying vec3 vWNormQ;\nvarying float vPanelQ;")
       .replace("#include <begin_vertex>",
         "#include <begin_vertex>\nvWPosQ = (modelMatrix * vec4(position,1.0)).xyz;\n" +
-        "vWNormQ = normalize(mat3(modelMatrix) * normal);");
+        "vWNormQ = normalize(mat3(modelMatrix) * normal);\nvPanelQ = aPanel;");
     sh.fragmentShader = sh.fragmentShader
       .replace("#include <common>",
         "#include <common>\nvarying vec3 vWPosQ;\nvarying vec3 vWNormQ;\n" +
+        "varying float vPanelQ;\n" +
         "uniform float uQOn;\nuniform vec3 uQStitch;\nuniform float uQScale;\n" +
         "uniform float uQAspect;\nuniform float uQBump;\nuniform float uQDash;")
       // colour_fragment runs before normal_fragment_begin, so the puff
@@ -608,7 +611,8 @@ function makeQuilt(u){
         "#include <color_fragment>",
         "vec2 qGrad = vec2(0.0);",
         "vec3 qAx = vec3(0.0), qAy = vec3(0.0);",
-        "if(uQOn > 0.5){",
+        "float qIn = uQOn > 0.5 ? smoothstep(1.0, 1.06, vPanelQ) : 0.0;",
+        "if(qIn > 0.001){",
         "  vec3 qn = abs(normalize(vWNormQ));",
         "  vec2 pp;",
         "  if(qn.y >= max(qn.x, qn.z)){ pp = vWPosQ.xz;",
@@ -635,19 +639,190 @@ function makeQuilt(u){
         "  float w = 0.012;",
         "  float la = (1.0 - smoothstep(w - fw, w + fw, da)) * dsa;",
         "  float lb = (1.0 - smoothstep(w - fw, w + fw, db)) * dsb;",
-        "  float st = clamp(max(la, lb), 0.0, 1.0);",
-        "  diffuseColor.rgb = mix(diffuseColor.rgb * qShade, uQStitch, st);",
+        "  float st = clamp(max(la, lb), 0.0, 1.0) * qIn;",
+        "  diffuseColor.rgb = mix(diffuseColor.rgb * mix(1.0, qShade, qIn), uQStitch, st);",
         // h = cos(pi*sa)*cos(pi*sb): 1 at the middle of a diamond, 0 on the seam
         "  float ha = -3.14159 * sin(3.14159*sa) * cos(3.14159*sb);",
         "  float hb = -3.14159 * cos(3.14159*sa) * sin(3.14159*sb);",
-        "  qGrad = vec2(ha + hb, ha - hb);",
+        "  qGrad = vec2(ha + hb, ha - hb) * qIn;",
         "}"].join("\n"))
       .replace("#include <normal_fragment_begin>",
         "#include <normal_fragment_begin>\n" +
-        "if(uQOn > 0.5){ normal = normalize(normal -\n" +
+        "if(qIn > 0.001){ normal = normalize(normal -\n" +
         "  (qGrad.x * qAx + qGrad.y * qAy) * uQBump); }");
   };
 }
+/* ---- where the quilting is allowed to sit ----
+   3 in of plain fabric all round the panel, and none over the top cap.
+
+   These meshes carry no UVs, and their flat faces are only two vertices
+   tall, so there is nowhere to hold "how far is this point from the edge of
+   the panel": a value that is zero on both of the only two rows just
+   interpolates to zero the whole way across. So subdivide them and bake it.
+
+   The panel edge is read off the geometry itself. A seed is any vertex with
+   another vertex within 24 mm whose normal has turned 50-120 deg away - the
+   bevel round the top cap, the bottom, the tapered ends. The 120 deg
+   ceiling is what stops the face on the far side of the 70 mm slab, a full
+   180 deg away and closer than the border, from counting as an edge and
+   swallowing the panel whole.
+
+   Baked normalised, so 1.0 is the inner edge of the border whatever the
+   panel: the side backrests are only a 211 mm face, where a full 3 in
+   border top and bottom would leave nothing in the middle, so they fall
+   back to the widest border that still leaves a quilted centre. */
+const QUILT_BORDER = 0.0762;   // 3 in
+const QUILT_SUB    = 4;        // lattice steps along a triangle edge
+const QUILT_REACH  = 0.150;    // deep enough - stop measuring past here
+const SEED_R       = 0.024;    // how far to look for the surface turning
+const SEED_COS_HI  = 0.643;    // cos 50 deg - a real turn, not quad twist
+const SEED_COS_LO  = -0.5;     // cos 120 deg - not the far side of the slab
+
+function bakePanelEdges(root){
+  const t0 = performance.now();
+  let n = 0;
+  root.traverse(o=>{
+    if(!o.isMesh || !o.geometry) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    if(!mats.some(m=>m && m.name === "Backrests")) return;
+    try{ if(bakePanelEdge(o)) n++; }
+    catch(e){ console.warn("panel bake failed on", o.name, e); }
+  });
+  console.log("[configurator] quilt panels baked:", n,
+              "in", Math.round(performance.now()-t0), "ms");
+}
+
+function bakePanelEdge(mesh){
+  const g = mesh.geometry, pos = g.attributes.position, nor = g.attributes.normal;
+  if(!pos || !nor) return false;
+  const n0 = pos.count;
+  let idx = g.index && g.index.array;
+  if(!idx){ idx = new Uint32Array(n0); for(let i=0;i<n0;i++) idx[i] = i; }
+
+  mesh.updateWorldMatrix(true, false);
+  const mw = mesh.matrixWorld;
+  const nmat = new THREE.Matrix3().getNormalMatrix(mw);
+  const wp = new Float32Array(n0*3), wn = new Float32Array(n0*3);
+  const v = new THREE.Vector3();
+  for(let i=0;i<n0;i++){
+    v.fromBufferAttribute(pos, i).applyMatrix4(mw);
+    wp[i*3]=v.x; wp[i*3+1]=v.y; wp[i*3+2]=v.z;
+    v.fromBufferAttribute(nor, i).applyMatrix3(nmat).normalize();
+    wn[i*3]=v.x; wn[i*3+1]=v.y; wn[i*3+2]=v.z;
+  }
+
+  const R2 = SEED_R*SEED_R, sx = [], sy = [], sz = [];
+  for(let i=0;i<n0;i++){
+    const ax=wp[i*3], ay=wp[i*3+1], az=wp[i*3+2];
+    const nx=wn[i*3], ny=wn[i*3+1], nz=wn[i*3+2];
+    for(let j=0;j<n0;j++){
+      if(j === i) continue;
+      const dx=wp[j*3]-ax, dy=wp[j*3+1]-ay, dz=wp[j*3+2]-az;
+      if(dx*dx+dy*dy+dz*dz > R2) continue;
+      const d = nx*wn[j*3] + ny*wn[j*3+1] + nz*wn[j*3+2];
+      if(d < SEED_COS_HI && d > SEED_COS_LO){ sx.push(ax); sy.push(ay); sz.push(az); break; }
+    }
+  }
+  if(!sx.length) return false;        // no edge found: leave the mesh plain
+
+  // seeds bucketed on a coarse grid, so a lookup only sees what is near it
+  const CELL = 0.05, ns = sx.length;
+  let x0=Infinity, y0=Infinity, z0=Infinity, x1=-Infinity, y1=-Infinity, z1=-Infinity;
+  for(let i=0;i<ns;i++){
+    if(sx[i]<x0) x0=sx[i]; if(sx[i]>x1) x1=sx[i];
+    if(sy[i]<y0) y0=sy[i]; if(sy[i]>y1) y1=sy[i];
+    if(sz[i]<z0) z0=sz[i]; if(sz[i]>z1) z1=sz[i];
+  }
+  const gx = Math.ceil((x1-x0)/CELL)+1, gy = Math.ceil((y1-y0)/CELL)+1,
+        gz = Math.ceil((z1-z0)/CELL)+1;
+  const cellOf = (a, lo, m)=> Math.min(m-1, Math.max(0, Math.floor((a-lo)/CELL)));
+  const buckets = new Array(gx*gy*gz);
+  for(let i=0;i<ns;i++){
+    const k = (cellOf(sx[i],x0,gx)*gy + cellOf(sy[i],y0,gy))*gz + cellOf(sz[i],z0,gz);
+    (buckets[k] || (buckets[k] = [])).push(i);
+  }
+  const RMAX = Math.ceil(QUILT_REACH/CELL);
+  function edgeDist(px, py, pz){
+    const ci = cellOf(px,x0,gx), cj = cellOf(py,y0,gy), ck = cellOf(pz,z0,gz);
+    let best = QUILT_REACH*QUILT_REACH;
+    for(let r=0;r<=RMAX;r++){
+      const reached = (r-1)*CELL;
+      if(r > 0 && reached*reached > best) break;
+      for(let a=Math.max(0,ci-r); a<=Math.min(gx-1,ci+r); a++){
+        const ea = Math.abs(a-ci) === r;
+        for(let b=Math.max(0,cj-r); b<=Math.min(gy-1,cj+r); b++){
+          const eb = ea || Math.abs(b-cj) === r;
+          for(let c=Math.max(0,ck-r); c<=Math.min(gz-1,ck+r); c++){
+            if(r > 0 && !eb && Math.abs(c-ck) !== r) continue;   // shell only
+            const L = buckets[(a*gy+b)*gz+c];
+            if(!L) continue;
+            for(let q=0;q<L.length;q++){
+              const s = L[q];
+              const dx=sx[s]-px, dy=sy[s]-py, dz=sz[s]-pz;
+              const d2 = dx*dx + dy*dy + dz*dz;
+              if(d2 < best) best = d2;
+            }
+          }
+        }
+      }
+    }
+    return Math.sqrt(best);
+  }
+
+  const N = QUILT_SUB, per = (N+1)*(N+2)/2, ntri = idx.length/3;
+  const lat = [];
+  for(let j=0, k=0; j<=N; j++){ lat.push([]); for(let i=0;i<=N-j;i++) lat[j].push(k++); }
+  const outP = new Float32Array(ntri*per*3), outN = new Float32Array(ntri*per*3);
+  const outE = new Float32Array(ntri*per),   outI = new Uint32Array(ntri*N*N*3);
+  const p0=new THREE.Vector3(), p1=new THREE.Vector3(), p2=new THREE.Vector3();
+  const q0=new THREE.Vector3(), q1=new THREE.Vector3(), q2=new THREE.Vector3();
+  const PP=new THREE.Vector3(), NN=new THREE.Vector3(), WW=new THREE.Vector3();
+  let vo = 0, io = 0, maxD = 0;
+  for(let t=0;t<ntri;t++){
+    const a=idx[t*3], b=idx[t*3+1], c=idx[t*3+2], base = vo;
+    p0.fromBufferAttribute(pos,a); p1.fromBufferAttribute(pos,b); p2.fromBufferAttribute(pos,c);
+    q0.fromBufferAttribute(nor,a); q1.fromBufferAttribute(nor,b); q2.fromBufferAttribute(nor,c);
+    for(let j=0;j<=N;j++){
+      for(let i=0;i<=N-j;i++){
+        const u = i/N, w = j/N, sxx = 1-u-w;
+        PP.set(p0.x*sxx+p1.x*u+p2.x*w, p0.y*sxx+p1.y*u+p2.y*w, p0.z*sxx+p1.z*u+p2.z*w);
+        NN.set(q0.x*sxx+q1.x*u+q2.x*w, q0.y*sxx+q1.y*u+q2.y*w, q0.z*sxx+q1.z*u+q2.z*w).normalize();
+        outP[vo*3]=PP.x; outP[vo*3+1]=PP.y; outP[vo*3+2]=PP.z;
+        outN[vo*3]=NN.x; outN[vo*3+1]=NN.y; outN[vo*3+2]=NN.z;
+        WW.copy(PP).applyMatrix4(mw);
+        const d = edgeDist(WW.x, WW.y, WW.z);
+        outE[vo] = d;
+        if(d > maxD) maxD = d;
+        vo++;
+      }
+    }
+    for(let j=0;j<N;j++){
+      for(let i=0;i<N-j;i++){
+        outI[io++] = base+lat[j][i]; outI[io++] = base+lat[j][i+1]; outI[io++] = base+lat[j+1][i];
+        if(i < N-j-1){
+          outI[io++] = base+lat[j][i+1]; outI[io++] = base+lat[j+1][i+1]; outI[io++] = base+lat[j+1][i];
+        }
+      }
+    }
+  }
+
+  const border = Math.min(QUILT_BORDER, maxD*0.55);
+  const inv = border > 1e-4 ? 1/border : 0;
+  for(let i=0;i<vo;i++) outE[i] *= inv;
+  console.log("[configurator]", mesh.name, "panel depth",
+              Math.round(maxD*1000) + " mm, border " + Math.round(border*1000) + " mm");
+
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute("position", new THREE.BufferAttribute(outP, 3));
+  ng.setAttribute("normal",   new THREE.BufferAttribute(outN, 3));
+  ng.setAttribute("aPanel",   new THREE.BufferAttribute(outE, 1));
+  ng.setIndex(new THREE.BufferAttribute(outI, 1));
+  ng.computeBoundingBox(); ng.computeBoundingSphere();
+  g.dispose();
+  mesh.geometry = ng;
+  return true;
+}
+
 function prepareBackrestMaterial(){
   (matsByName.get("Backrests") || []).forEach(m=>{
     m.onBeforeCompile = makeQuilt(backrestU); m.needsUpdate = true;
@@ -1257,7 +1432,8 @@ async function exportPDF(btn){
    ["SeaDek floor", deckU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["SeaDek wall tops", wallU.uOn.value>0.5 ? "Fitted" : "Not fitted"],
    ["Backrests", !backrestsFitted ? "Not fitted"
-       : (backrestU.uQOn.value>0.5 ? "Diamond quilted, contrast stitch" : "Plain")],
+       : (backrestU.uQOn.value>0.5
+           ? "Diamond quilted centre, plain border, contrast stitch" : "Plain")],
   ].forEach(([k,v])=>{ doc.text(k, M+5, y); doc.text(v, M+75, y); y += 6; });
   y += 4; doc.setTextColor(20); doc.text("Colours", M+5, y); y += 6;
   doc.setTextColor(70);
